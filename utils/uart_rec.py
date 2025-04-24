@@ -1,3 +1,4 @@
+
 #!/usr/bin/python3
 
 import serial
@@ -39,7 +40,14 @@ def ReceiveImage():
     print(f"File saved: {filepath}")
 
 def LoopFolder(folder_name):
-    #print(f"Looping through folder: {folder_name}")
+     global current_process
+
+    # kill previous process if running
+    if current_process and current_process.poll() is None:
+        current_process.terminate()
+        current_process.wait()
+        print("Previous process terminated")
+
     p = None
     try:
         # while True:
@@ -51,9 +59,11 @@ def LoopFolder(folder_name):
         filepath = folder_name + '/*.png'
         try:
             command = f'/home/dietpi/rpi-rgb-led-matrix/utils/led-image-viewer --led-rows=64 --led-cols=64 --led-show-refresh --led-pwm-dither-bits=2 --led-slowdown-gpio=3 --led-pwm-bits=4 --led-pwm-lsb-nanoseconds=50 -f -w0.0008 {filepath}'
-            p = subprocess.run(command, shell=True, check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to run ./viewer on {filepath}: {e}")
+            current_process = subprocess.Popen(command, shell=True)
+            print(f"Started viewer for {filepath}")
+        except Exception as e:
+            print(f"Failed to run viewer: {e}")
+            current_process = None
 
             # time.sleep(2)  ##### time unit to wait.  need to adjust to match the motor driver unit
     except KeyboardInterrupt:
