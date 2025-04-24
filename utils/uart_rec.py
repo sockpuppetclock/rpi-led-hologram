@@ -1,4 +1,3 @@
-
 #!/usr/bin/python3
 
 import serial
@@ -6,7 +5,9 @@ import os
 import re
 import time
 import subprocess
+import signal
 
+current_process = None
 ser = None
 def OpenSerial():
     global ser
@@ -23,6 +24,8 @@ def ReceiveImage():
 
     match = re.match(r"([^\d]+)", os.path.splitext(filename)[0])
     folder_name = match.group(1) if match else "unknown"
+    folder_name = "images/"+folder_name
+    os.makedirs("images",exist_ok=True)
     os.makedirs(folder_name, exist_ok=True)
 
     file_size = int.from_bytes(ser.read(4), 'big')
@@ -39,16 +42,20 @@ def ReceiveImage():
 
     print(f"File saved: {filepath}")
 
-def LoopFolder(folder_name):
-     global current_process
-
+def LoopFolder(state):
+    folder_name = "images/"+state
+    global current_process
     # kill previous process if running
-    if current_process and current_process.poll() is None:
-        current_process.terminate()
+    # try:
+        # print(f"PID={current_process.pid}") 
+    # except:
+        # print("pass")
+    if current_process != None and current_process.poll() is None:
+        os.killpg(os.getpgid(current_process.pid), signal.SIGTERM)
         current_process.wait()
         print("Previous process terminated")
+        # time.sleep(1)
 
-    p = None
     try:
         # while True:
         files = os.listdir(folder_name)
@@ -58,9 +65,11 @@ def LoopFolder(folder_name):
         print(folder_name + '/*.png')
         filepath = folder_name + '/*.png'
         try:
-            command = f'/home/dietpi/rpi-rgb-led-matrix/utils/led-image-viewer --led-rows=64 --led-cols=64 --led-show-refresh --led-pwm-dither-bits=2 --led-slowdown-gpio=3 --led-pwm-bits=4 --led-pwm-lsb-nanoseconds=50 -f -w0.0008 {filepath}'
-            current_process = subprocess.Popen(command, shell=True)
+            command = f'/home/dietpi/rpi-led-hologram/utils/led-image-viewer --led-rows=64 --led-cols=64 --led-pwm-dither-bits=2 --led-slowdown-gpio=3 --led-pwm-bits=4 --led-pwm-lsb-nanoseconds=50 --led-pixel-mapper="Rotate:270" -f -w0.0008 {filepath}'
+            current_process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
             print(f"Started viewer for {filepath}")
+            print(f"PID={current_process.pid}") 
+            print(f"GPID={os.getpgid(current_process.pid)}") 
         except Exception as e:
             print(f"Failed to run viewer: {e}")
             current_process = None
@@ -69,22 +78,30 @@ def LoopFolder(folder_name):
     except KeyboardInterrupt:
         print("Stopped folder loop")
     except:
-        if p != None:
-            p.terminate()
-
+        print("Excepted on Loop Folder")
+    return current_process
 def MainLoop():
-    while True:
-        if ser.in_waiting:
-            # sending over an image
-            control_byte = ser.read(1)
-            print(control_byte)
-            if control_byte == b'\x01':
-                ReceiveImage()
-            # change animation state
-            elif control_byte == b'\x02':
-                folder_length = int.from_bytes(ser.read(1), 'big')
-                folder_name = ser.read(folder_length).decode('utf-8')
-                LoopFolder(folder_name)
+    try:
+        while True:
+            # test
+            # if current_process == None:
+            #     LoopFolder("snoozing")
+            # 
+            if ser.in_waiting:
+                # sending over an image
+                control_byte = ser.read(1)
+                print(control_byte)
+                if control_byte == b'\x01':
+                    ReceiveImage()
+                # change animation state
+                elif control_byte == b'\x02':
+                    folder_length = int.from_bytes(ser.read(1), 'big')
+                    folder_name = ser.read(folder_length).decode('utf-8')
+                    LoopFolder(folder_name)
+    except KeyboardInterrupt:
+        if current_process != None and current_process.poll() is None:
+            os.killpg(os.getpgid(current_process.pid), signal.SIGTERM)
+            current_process.wait()
 
 OpenSerial()
 MainLoop()
