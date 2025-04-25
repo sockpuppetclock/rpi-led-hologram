@@ -47,6 +47,8 @@ using rgb_matrix::FrameCanvas;
 using rgb_matrix::RGBMatrix;
 using rgb_matrix::StreamReader;
 
+#define SPIN_SYNC 3 // gpio
+
 typedef int64_t tmillis_t;
 static const tmillis_t distant_future = (1LL<<40); // that is a while.
 
@@ -69,6 +71,11 @@ struct FileInfo {
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
   interrupt_received = true;
+}
+
+volatile bool do_reset = false;
+static void ResetHandler(int signo) {
+  do_reset = true;
 }
 
 static tmillis_t GetTimeInMillis() {
@@ -252,6 +259,8 @@ int main(int argc, char *argv[]) {
 
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
+
+  int idle_start = 0;
   // If started with 'sudo': make sure to drop privileges to same user
   // we started with, which is the most expected (and allows us to read
   // files as that user).
@@ -348,7 +357,14 @@ int main(int argc, char *argv[]) {
     // Starting from the current file, set all the remaining files to
     // the latest change.
     for (int i = optind; i < argc; ++i) {
-      filename_params[argv[i]] = img_param;
+      if ( strcmp(argv[i],"idle") == 0 )
+      {
+        idle_start = i - optind;
+      }
+      else
+      {
+        filename_params[argv[i]] = img_param;
+      }
     }
   }
 
@@ -363,6 +379,8 @@ int main(int argc, char *argv[]) {
   RGBMatrix *matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL)
     return 1;
+
+  printf( "REQUEST INPUTS: %lu\n", matrix->RequestInputs(1<<SPIN_SYNC) );
 
   FrameCanvas *offscreen_canvas = matrix->CreateFrameCanvas();
 
@@ -413,6 +431,8 @@ int main(int argc, char *argv[]) {
           delay_time_us = file_info->params.wait_ms * 1000;  // single image.
         }
         if (delay_time_us <= 0) delay_time_us = 100 * 1000;  // 1/10sec
+
+        delay_time_us = 0;
         StoreInStream(img, delay_time_us, do_center, offscreen_canvas,
                       global_stream_writer ? global_stream_writer : &out);
       }
@@ -500,13 +520,38 @@ int main(int argc, char *argv[]) {
 
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
+  signal(SIGUSR1, ResetHandler);
 
+  bool sync, sync_last = 0;
+  int sync_frame = 0;
+  // do the actual displaying
   do {
     if (do_shuffle) {
       std::random_shuffle(file_imgs.begin(), file_imgs.end());
     }
-    for (size_t i = 0; i < file_imgs.size() && !interrupt_received; ++i) {
+    size_t i = 0;
+    // for (size_t i = 0; i < file_imgs.size() && !interrupt_received; ++i) {
+    while (i < file_imgs.size() && !interrupt_received) {
+      if(do_reset == true){
+        sync_frame = 0;
+        i = 0;
+        do_reset = false;
+      }
       DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
+      sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
+      if( sync_last != sync)
+      {
+        sync_last = sync;
+        if (sync == 0 )
+        {
+          i = sync_frame;
+        }
+      }
+      if( ++i > file_imgs.size()-1 )
+      {
+        sync_frame = idle_start;
+        i = idle_start;
+      }
     }
   } while (do_forever && !interrupt_received);
 

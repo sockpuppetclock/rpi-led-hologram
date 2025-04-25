@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import random
 import serial
 import os
 import re
@@ -9,6 +10,8 @@ import signal
 
 current_process = None
 ser = None
+procs = {}
+
 def OpenSerial():
     global ser
     ser = serial.Serial('/dev/ttyS0', 115200, timeout=1)
@@ -43,6 +46,7 @@ def ReceiveImage():
     print(f"File saved: {filepath}")
 
 def LoopFolder(state):
+    print("LoopFolder("+state+")")
     folder_name = "images/"+state
     global current_process
     # kill previous process if running
@@ -50,43 +54,84 @@ def LoopFolder(state):
         # print(f"PID={current_process.pid}") 
     # except:
         # print("pass")
-    if current_process != None and current_process.poll() is None:
-        os.killpg(os.getpgid(current_process.pid), signal.SIGTERM)
-        current_process.wait()
-        print("Previous process terminated")
+    if current_process == None:
+        os.killpg(os.getpgid(procs[state].pid), signal.SIGCONT)
+        current_process = state
+        print(current_process+" start")
+    if current_process != None:
+        os.killpg(os.getpgid(procs[current_process].pid), signal.SIGUSR1)
+        os.killpg(os.getpgid(procs[current_process].pid), signal.SIGSTOP)
+        os.killpg(os.getpgid(procs[state].pid), signal.SIGCONT)
+        print(current_process+" -> "+state)
+        current_process = state
+        # current_process.wait()
+        # print("Previous process terminated")
         # time.sleep(1)
 
-    try:
-        # while True:
-        files = os.listdir(folder_name)
-        # images = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        print(f"Images in {folder_name}:")
-        # for img in images:
+    # try:
+    #     # while True:
+    #     files = os.listdir(folder_name)
+    #     # images = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    #     print(f"Images in {folder_name}:")
+    #     # for img in images:
+    #     print(folder_name + '/*.png')
+    #     filepath = folder_name + '/*.png'
+    #     filepath2 = folder_name + '_Idle/*.png'
+    #     try:
+    #         command = f'/home/dietpi/rpi-led-hologram/utils/led-image-viewer --led-rows=64 --led-cols=64 --led-pwm-dither-bits=2 --led-slowdown-gpio=3 --led-pwm-bits=4 --led-pwm-lsb-nanoseconds=50 --led-pixel-mapper="Rotate:270" -f -w0.0008 {filepath} idle {filepath2}'
+    #         current_process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
+    #         print(f"Started viewer for {filepath}")
+    #         print(f"PID={current_process.pid}") 
+    #         print(f"GPID={os.getpgid(current_process.pid)}") 
+    #     except Exception as e:
+    #         print(f"Failed to run viewer: {e}")
+    #         current_process = None
+
+    #         # time.sleep(2)  ##### time unit to wait.  need to adjust to match the motor driver unit
+    # except KeyboardInterrupt:
+    #     print("Stopped folder loop")
+    # except:
+    #     print("Excepted on Loop Folder")
+    # return current_process
+
+def InitFolders():
+    p = 0
+    for folder_name in os.listdir("/home/dietpi/rpi-led-hologram/utils/images/"):
+        if folder_name.endswith("_Idle"):
+            continue
         print(folder_name + '/*.png')
-        filepath = folder_name + '/*.png'
+        filepath = "/home/dietpi/rpi-led-hologram/utils/images/" + folder_name + '/*.png'
+        filepath2 = "/home/dietpi/rpi-led-hologram/utils/images/" + folder_name + '_Idle/*.png'
         try:
-            command = f'/home/dietpi/rpi-led-hologram/utils/led-image-viewer --led-rows=64 --led-cols=64 --led-pwm-dither-bits=2 --led-slowdown-gpio=3 --led-pwm-bits=4 --led-pwm-lsb-nanoseconds=50 --led-pixel-mapper="Rotate:270" -f -w0.0008 {filepath}'
-            current_process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
+            command = f'/home/dietpi/rpi-led-hologram/utils/led-image-viewer --led-rows=64 --led-cols=64 --led-limit-refresh=1000 --led-pwm-dither-bits=2 --led-slowdown-gpio=3 --led-pwm-bits=4 --led-pwm-lsb-nanoseconds=50 --led-pixel-mapper="Rotate:270" -f -w0.0008 {filepath} idle {filepath2}'
+            procs[folder_name] = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
             print(f"Started viewer for {filepath}")
-            print(f"PID={current_process.pid}") 
-            print(f"GPID={os.getpgid(current_process.pid)}") 
+            print(f"PID={procs[folder_name].pid}") 
+            print(f"GPID={os.getpgid(procs[folder_name].pid)}")
+            time.sleep(3)
+            os.killpg(os.getpgid(procs[folder_name].pid), signal.SIGUSR1)
+            os.killpg(os.getpgid(procs[folder_name].pid), signal.SIGSTOP)
         except Exception as e:
             print(f"Failed to run viewer: {e}")
-            current_process = None
+    print(procs)
 
-            # time.sleep(2)  ##### time unit to wait.  need to adjust to match the motor driver unit
-    except KeyboardInterrupt:
-        print("Stopped folder loop")
-    except:
-        print("Excepted on Loop Folder")
-    return current_process
+
 def MainLoop():
+    t = time.time()
+    test = time.time()
     try:
+        InitFolders()
+        LoopFolder("Idle")
         while True:
             # test
             # if current_process == None:
             #     LoopFolder("snoozing")
             # 
+            test = time.time()
+            if test - t > 3:
+                t = test
+                f = random.choice(list(procs.keys()))
+                LoopFolder(f)
             if ser.in_waiting:
                 # sending over an image
                 control_byte = ser.read(1)
@@ -99,9 +144,25 @@ def MainLoop():
                     folder_name = ser.read(folder_length).decode('utf-8')
                     LoopFolder(folder_name)
     except KeyboardInterrupt:
-        if current_process != None and current_process.poll() is None:
-            os.killpg(os.getpgid(current_process.pid), signal.SIGTERM)
-            current_process.wait()
+        for key in procs:
+            print(key, procs[key])
+            os.killpg(os.getpgid(procs[key].pid), signal.SIGCONT)
+            time.sleep(0.1)
+            os.killpg(os.getpgid(procs[key].pid), signal.SIGTERM)
+            procs[key].wait()
+    except:
+        if current_process != None:
+            os.killpg(os.getpgid(procs[current_process].pid), signal.SIGTERM)
+            procs[current_process].wait()
+        for key in procs:
+            if key == current_process:
+                continue
+            os.killpg(os.getpgid(procs[key].pid), signal.SIGCONT)
+            time.sleep(1)
+            os.killpg(os.getpgid(procs[key].pid), signal.SIGTERM)
+            procs[key].wait()
+
+os.chdir("/home/dietpi/rpi-led-hologram/utils/")
 
 OpenSerial()
 MainLoop()
