@@ -20,6 +20,14 @@ def OpenSerial():
 def CloseSerial():
     ser.close()
 
+def ReceiveSwipe():
+    dir_length = int.from_bytes(ser.read(1), 'big')
+    dir = ser.read(dir_length)
+    print(f"Receiving swipe {dir}")
+    for d in dir:
+        letter = = chr(d)
+        # do whatever you need with the character L or R @johnathon
+
 def ReceiveImage():
     filename_length = int.from_bytes(ser.read(1), 'big')
     filename = ser.read(filename_length).decode('utf-8')
@@ -143,6 +151,9 @@ def MainLoop():
                     folder_length = int.from_bytes(ser.read(1), 'big')
                     folder_name = ser.read(folder_length).decode('utf-8')
                     LoopFolder(folder_name)
+                # receive swipe
+                elif control_byte == b'\x03':
+                    ReceiveSwipe()
     except KeyboardInterrupt:
         for key in procs:
             print(key, procs[key])
