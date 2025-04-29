@@ -25,7 +25,7 @@ def ReceiveSwipe():
     dir = ser.read(dir_length)
     print(f"Receiving swipe {dir}")
     for d in dir:
-        letter = = chr(d)
+        letter = chr(d)
         # do whatever you need with the character L or R @johnathon
 
 def ReceiveImage():
@@ -135,11 +135,11 @@ def MainLoop():
             # if current_process == None:
             #     LoopFolder("snoozing")
             # 
-            test = time.time()
-            if test - t > 3:
-                t = test
-                f = random.choice(list(procs.keys()))
-                LoopFolder(f)
+            # test = time.time()
+            # if test - t > 3:
+            #     t = test
+            #     f = random.choice(list(procs.keys()))
+            #     LoopFolder(f)
             if ser.in_waiting:
                 # sending over an image
                 control_byte = ser.read(1)
@@ -154,6 +154,8 @@ def MainLoop():
                 # receive swipe
                 elif control_byte == b'\x03':
                     ReceiveSwipe()
+                # elif control_byte == b'\x04':
+                # receive gesture
     except KeyboardInterrupt:
         for key in procs:
             print(key, procs[key])

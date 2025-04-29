@@ -1,0 +1,3 @@
+#!/bin/bash
+
+/home/dietpi/rpi-led-hologram/utils/hologram-viewer --led-rows=64 --led-cols=64 --led-limit-refresh=1000 --led-pwm-dither-bits=2 --led-slowdown-gpio=3 --led-pwm-bits=4 --led-pwm-lsb-nanoseconds=50 --led-pixel-mapper="Rotate:270" -f "/home/dietpi/rpi-led-hologram/utils/images/*/*.png"
