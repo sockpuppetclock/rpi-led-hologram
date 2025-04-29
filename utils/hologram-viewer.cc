@@ -53,6 +53,7 @@ using rgb_matrix::RGBMatrix;
 using rgb_matrix::StreamReader;
 
 #define SPIN_SYNC 3 // gpio
+#define UART_BUF_SIZE 2048 // 1024 should be enough but not by much
 
 typedef int64_t tmillis_t;
 static const tmillis_t distant_future = (1LL<<40); // that is a while.
@@ -247,10 +248,91 @@ static int beginUART() {
   return fd;
 }
 
-static int uartcycle(int buf)
-{
+static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
+  switch (cmd) {
+      case 0x01:
+          // receive an image
+          printf("Received image with length %zu\n", len);
+          // Process the image data in payload
+          uint16_t name_size = (payload[0] << 8) | payload[1]; // big endian
+          char filename[256]; // max POSIX filename length
+          if (name_size >= sizeof(filename)) {
+              // Filename too big for buffer
+              return;
+          }
+          // Extract filename
+          memcpy(filename, payload + 2, name_size);
+          filename[name_size] = '\0'; // terminate the filename with a null character
 
-  return 0;
+          // Extract file contents
+          uint8_t* file_contents = payload + 2 + name_size;
+          size_t file_size = len - 2 - name_size;
+
+          //////////////// ALL THIS JUST TO NAME THE DAMN FILE ////////////////
+          // Find first numeric character in filename
+          size_t base_len = 0;
+          while (base_len < name_size && !(filename[base_len] >= '0' && filename[base_len] <= '9')) {
+              base_len++;
+          }
+          if (base_len == 0) {
+              // original filename is invalid as it contains numbers at the beginning
+              // it actually isn't allowed to contain numbers at all EXCEPT the index at the end
+              return;
+          }
+          char folder[300];
+          snprintf(folder, sizeof(folder), "%.*s", (int)base_len, filename);
+
+          // Make directory if it doesn't exist
+          if (mkdir(folder, 0777) && errno != EEXIST) {
+            printf("Failed to create folder: %s\n", folder);
+            return;
+          }
+
+          // Create full path to save file
+          char fullpath[512];
+          snprintf(fullpath, sizeof(fullpath), "%s/%s", folder, filename);
+
+          // yay now we can save it
+          uint8_t* file_contents = payload + 2 + name_size;
+          size_t file_size = len - 2 - name_size;
+
+          FILE* f = fopen(fullpath, "wb");
+          if (f) {
+              fwrite(file_contents, 1, file_size, f);
+              fclose(f);
+              printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
+          } else {
+              printf("Failed to open file for writing: %s\n", fullpath);
+          }
+
+          break;
+
+      case 0x02:
+          // change animation state
+          // @Johnathan this one is for you. im not familiar with how you want to handle all the animations running at once
+          break;
+      case 0x03:
+          // receive a swipe input
+          uint8_t payload_len = payload[0];
+          char dir[2]; // max length of direction string
+          if (payload_len >= sizeof(dir)) {
+              // Filename too big for buffer (should be impossible)
+              return;
+          }
+
+          memcpy(dir, payload + 1, dir_length);
+          dir[dir_length] = '\0'; // Terminate the string with a null character
+          printf("Receiving swipe: %s\n", dir);
+
+          for (uint8_t i = 0; i < dir_length; ++i) {
+            char letter = dir[i];
+            // @Johnathan back to you, i don't really know what you want to do with the swipe inputs.
+            printf("Letter %d: %c\n", i, letter);
+          break;
+      default:
+          // unknown command
+          break;
+  }
 }
 
 static int usage(const char *progname) {
@@ -587,7 +669,8 @@ int main(int argc, char *argv[]) {
 
   bool sync, sync_last = 0, sync_loop = 0;
   int sync_frame = 0;
-  char read_buf [256];
+  char read_buf [UART_BUF_SIZE];
+  size_t uart_buf_len = 0; // how many valid bytes currently in uart_buf
   int bytes;
   // do the actual displaying
   do {
@@ -607,6 +690,38 @@ int main(int argc, char *argv[]) {
       ioctl(fd, FIONREAD, &bytes);
       if( bytes > 0 )
       {
+        int r = read(fd, uart_buf + uart_buf_len, UART_BUF_SIZE - uart_buf_len);
+        if (r > 0) {
+          uart_buf_len += r
+
+          size_t consumed = 0;
+          while (uart_buf_len - consumed >= 3) // plus three accounting for 1 command byte and 2 length bytes
+          {
+            char cmd cmd = uart_buf[consumed];
+            uint16_t payload_len = (uart_buf[consumed + 1] << 8) | uart_buf[consumed + 2]; // big endian payload length
+
+            if (payload_len > UART_BUF_SIZE - 3) {
+              // payload length is too long to fit in buffer
+              fprintf(stderr, "Payload length %d is too long\n", payload_len);
+              uart_buf_len = 0;
+              consumed = 0;
+              break;
+            }
+            if (uart_buf_len - consumed < payload_len + 3) {
+              // incomplete payload.. wait for more data
+              break;
+            }
+
+            // we have a full command! process it
+            process_uart_command(cmd, uart_buf + consumed + 3, payload_len);
+            consumed += payload_len + 3; // move to next command
+
+            if (consumed > 0)
+            {
+              memmove(uart_buf, uart_buf + consumed, uart_buf_len - consumed);
+              uart_buf_len -= consumed;
+            }
+          }
         memset(&read_buf, '\0', sizeof(read_buf));
         read(fd, &read_buf, sizeof(read_buf));
         uartcycle(read_buf);
