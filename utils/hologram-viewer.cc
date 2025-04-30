@@ -64,7 +64,7 @@ static const tmillis_t distant_future = (1LL<<40); // that is a while.
 
 static volatile char* anim_state = NULL;
 static int serial_fd;
-static char read_buf[UART_BUF_SIZE]; // rolling UART buffer
+static uint8_t read_buf[UART_BUF_SIZE]; // rolling UART buffer
 static volatile size_t uart_buf_head = 0; // length of stored buffer
 static volatile bool read_busy = 0; // if process_uart is running
 
@@ -95,8 +95,8 @@ struct FileInfo {
 
 struct AnimState {
   char *name;
-  rgb_matrix::StreamIO* play_streams;
-  rgb_matrix::StreamIO* idle_streams;
+  std::vector< rgb_matrix::StreamIO* > play_streams;
+  std::vector< rgb_matrix::StreamIO* > idle_streams;
   int loop_point = 0;
 };
 
@@ -246,7 +246,7 @@ void DisplayAnimation(const FileInfo *file,
 }
 
 // store file in canvas stream
-void do_magick(char* filename, char* state) //, int slice)
+void do_magick(char* filename, char* state, bool* idle) //, int slice)
 {
   ImageParams img_param;
   FileInfo *file_info = NULL;
@@ -264,6 +264,10 @@ void do_magick(char* filename, char* state) //, int slice)
       const Magick::Image &img = image_sequence[i];
       StoreInStream(img, 0, false, offscreen_canvas, &out);
     }
+  }
+  if(file_info)
+  {
+
   }
 }
 
@@ -338,6 +342,7 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
     }
     char folder[512];
     char stateName[512];
+    bool isIdle;
     snprintf(folder, sizeof(folder), "%s%.*s", IMAGE_DIR, (int)base_len, filename);
 
     // get state name & check if _Idle
@@ -345,10 +350,12 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
     {
       memcpy(stateName, folder, base_len - 5);
       // do something
+      isIdle = true;
     }
     else
     {
       memcpy(stateName, folder, base_len);
+      isIdle = false;
     }
 
     // Make directory if it doesn't exist
@@ -365,18 +372,18 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
     size_t file_size = len - name_size - 3;
     uint8_t* file_contents = payload + 3 + name_size;
 
-    if ( !fs::exists(fullpath) )
-    {
+    // if ( !fs::exists(fullpath) )
+    // {
       FILE* f = fopen(fullpath, "wb");
       if (f) {
         fwrite(file_contents, 1, file_size, f);
         fclose(f);
         printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
-        do_magick(fullpath, stateName); // store in canvas
+        do_magick(fullpath, stateName, isIdle); // store in canvas
       } else {
         printf("Failed to open file for writing: %s\n", fullpath);
       }
-    }
+    // }
   }
   else if (cmd == 0x02)
   {
@@ -419,6 +426,7 @@ static void *process_uart(void *arg)
   int bytes;
   while(!interrupt_received)
   {
+    // todo: if time > timeout, reset uart_buf_head
     ioctl(serial_fd, FIONREAD, &bytes);
     if(bytes <= 0 )
     {
