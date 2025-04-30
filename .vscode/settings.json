@@ -54,6 +54,8 @@
       "codecvt": "cpp",
       "iomanip": "cpp",
       "sstream": "cpp",
-      "iostream": "cpp"
+      "iostream": "cpp",
+      "cstdarg": "cpp",
+      "list": "cpp"
    }
 }

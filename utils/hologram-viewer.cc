@@ -57,7 +57,7 @@ using rgb_matrix::RGBMatrix;
 using rgb_matrix::StreamReader;
 
 #define SPIN_SYNC 3 // gpio
-#define UART_BUF_SIZE 4096 // 1024 should be enough but not by much
+#define UART_BUF_SIZE 8192 // 1024 should be enough but not by much
 
 typedef int64_t tmillis_t;
 static const tmillis_t distant_future = (1LL<<40); // that is a while.
@@ -74,6 +74,8 @@ static RGBMatrix *matrix;
 static FrameCanvas *offscreen_canvas;
 
 namespace fs = std::filesystem;
+
+#define IMAGE_DIR "/hologram/utils/images/"
 
 struct ImageParams {
   ImageParams() : anim_duration_ms(distant_future), wait_ms(1500),
@@ -101,6 +103,10 @@ struct AnimState {
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
   interrupt_received = true;
+  if(uart_thread > 0)
+  {
+    pthread_cancel(uart_thread);
+  }
 }
 
 volatile bool do_reset = false;
@@ -297,7 +303,7 @@ static int beginUART() {
 const char IDLE_SUFFIX[] = "_Idle";
 
 static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
-  printf("PROCESS_UART_COMMAND : %d/%lu",cmd,len);
+  printf("PROCESS_UART_COMMAND : %d / %lu\n",cmd,len);
   if( cmd == 0x01 )
   {
     // receive an image
@@ -315,6 +321,10 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
     memcpy(filename, payload + 3, name_size);
     filename[name_size] = '\0'; // terminate the filename with a null character
 
+    printf("%s\n",filename);
+
+    // return;
+
     //////////////// ALL THIS JUST TO NAME THE DAMN FILE ////////////////
     // Find first numeric character in filename
     size_t base_len = 0;
@@ -328,12 +338,13 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
     }
     char folder[512];
     char stateName[512];
-    snprintf(folder, sizeof(folder), "%.*s", (int)base_len, filename);
+    snprintf(folder, sizeof(folder), "%s%.*s", IMAGE_DIR, (int)base_len, filename);
 
-    // check if _Idle
+    // get state name & check if _Idle
     if( base_len > 6 && strcmp(folder + base_len - 5, IDLE_SUFFIX) == 0 )
     {
       memcpy(stateName, folder, base_len - 5);
+      // do something
     }
     else
     {
@@ -342,7 +353,7 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
 
     // Make directory if it doesn't exist
     if (mkdir(folder, 0777) && errno != EEXIST) {
-      printf("Failed to create folder: %s\n", folder);
+      printf("Failed to create folder: %s\nError: %s\n", folder, strerror(errno));
       return;
     }
 
@@ -370,16 +381,17 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
     // 0x02 -> length [0] -> string -> \0
 
     uint8_t payload_len = payload[0];
-    char newState[payload_len];
-    memcpy(newState, payload+1, payload_len);
+    char nextState[payload_len+1];
+    memcpy(nextState, payload+1, payload_len);
 
-    anim_state = newState;
+    nextState[payload_len] = '\0';
+    printf("anim_state : %s\n",nextState);
   }
   else if (cmd == 0x03)
   {
     // receive a swipe input
     uint8_t payload_len = payload[0];
-    char dir[payload_len]; // max length of direction string
+    char dir[payload_len+1]; // max length of direction string
     if (payload_len >= sizeof(dir)) {
       // Filename too big for buffer (should be impossible)
       return;
@@ -395,6 +407,7 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
       printf("Letter %d: %c\n", i, letter);
     }
   }
+  fflush(stdout);
 }
 
 // poll UART and process if RX
@@ -409,7 +422,7 @@ static void *process_uart(void *arg)
       continue;
     }
 
-    printf("BYTES RECEIVED : %d",bytes);
+    printf("BYTES RECEIVED : %d\n",bytes);
     
     int r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head); // read up to end of available buffer
     uart_buf_head += r;
@@ -435,6 +448,7 @@ static void *process_uart(void *arg)
         full_read.push_back(read_buf[1]);full_read.push_back(read_buf[2]);
         payload_len = (full_read[1] << 8) | full_read[2]; // big endian
         payhead = 2;
+        printf("PAYLOAD : %u\n", payload_len);
       }
       else // 1-byte length
       {
@@ -446,36 +460,53 @@ static void *process_uart(void *arg)
         full_read.push_back(read_buf[1]);
         payload_len = full_read[1];
         payhead = 1;
+        printf("PAYLOAD : %u\n", payload_len);
       }
 
       int len = 0;
       // clear buffer head
-      while( uart_buf_head > len + payhead && len < payload_len )
+      while( uart_buf_head > len + payhead + 1 && len < payload_len )
       {
-        full_read.push_back(read_buf[len+payhead]);
+        // printf("run %c %d %lu\n",read_buf[len+payhead+1], len, uart_buf_head);
+        full_read.push_back(read_buf[len+payhead+1]);
         len++;
       }
       // move read buffer back if excess from last read
       if( len == payload_len )
       {
-        uart_buf_head = uart_buf_head - len - payhead;
-        memmove(read_buf, read_buf + len + payhead, uart_buf_head );
+        uart_buf_head = uart_buf_head - (payload_len+payhead+1);
+        memmove( read_buf, read_buf + (payload_len+payhead+1) , uart_buf_head );
       }
-
       while(len < payload_len)
       {
         r = read(serial_fd, read_buf, UART_BUF_SIZE);
+        uart_buf_head += r;
         int c = 0;
         while(r > c && len < payload_len)
         {
+          // printf("cont %c %lu\n",read_buf[c], uart_buf_head);
           full_read.push_back(read_buf[c++]);
           len++;
         }
-        uart_buf_head = c; // excess from last read
+        if( len == payload_len && r > c)
+        {
+          // printf("excess %d ",c);
+          // for( int k = 0; k < r-c ; k++)
+          // {
+          //   printf("%c", read_buf[c+k]);
+          // }
+          uart_buf_head = r-c; // excess from last read
+          memmove( read_buf, read_buf + c , uart_buf_head );
+        }
+        else
+        {
+          uart_buf_head = 0;
+        }
       }
+      fflush(stdout);
 
 
-      process_uart_command(full_read[0], full_read.data() + 1, payload_len + payhead);
+      process_uart_command(full_read[0], full_read.data() + 1, payhead+payload_len);
     }
   }
   pthread_exit(NULL);

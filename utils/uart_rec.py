@@ -128,8 +128,8 @@ def MainLoop():
     t = time.time()
     test = time.time()
     try:
-        InitFolders()
-        LoopFolder("Idle")
+        # InitFolders()
+        # LoopFolder("Idle")
         while True:
             # test
             # if current_process == None:
@@ -150,7 +150,7 @@ def MainLoop():
                 elif control_byte == b'\x02':
                     folder_length = int.from_bytes(ser.read(1), 'big')
                     folder_name = ser.read(folder_length).decode('utf-8')
-                    LoopFolder(folder_name)
+                    # LoopFolder(folder_name)
                 # receive swipe
                 elif control_byte == b'\x03':
                     ReceiveSwipe()
@@ -175,7 +175,7 @@ def MainLoop():
             os.killpg(os.getpgid(procs[key].pid), signal.SIGTERM)
             procs[key].wait()
 
-os.chdir("/home/dietpi/rpi-led-hologram/utils/")
+os.chdir("/hologram/utils/")
 
 OpenSerial()
 MainLoop()
