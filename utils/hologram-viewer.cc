@@ -64,14 +64,16 @@ static const tmillis_t distant_future = (1LL<<40); // that is a while.
 
 static volatile char* anim_state = NULL;
 static int serial_fd;
-static volatile char read_buf[UART_BUF_SIZE]; // rolling UART buffer
+static char read_buf[UART_BUF_SIZE]; // rolling UART buffer
 static volatile size_t uart_buf_head = 0; // length of stored buffer
 static volatile bool read_busy = 0; // if process_uart is running
+
+static pthread_t uart_thread;
 
 static RGBMatrix *matrix;
 static FrameCanvas *offscreen_canvas;
 
-namespace fs = std::filesystem
+namespace fs = std::filesystem;
 
 struct ImageParams {
   ImageParams() : anim_duration_ms(distant_future), wait_ms(1500),
@@ -91,8 +93,8 @@ struct FileInfo {
 
 struct AnimState {
   char *name;
-  rgb_matrix::StreamIO* play_streams[];
-  rgb_matrix::StreamIO* idle_streams[];
+  rgb_matrix::StreamIO* play_streams;
+  rgb_matrix::StreamIO* idle_streams;
   int loop_point = 0;
 };
 
@@ -238,7 +240,7 @@ void DisplayAnimation(const FileInfo *file,
 }
 
 // store file in canvas stream
-void do_magick(char* filename, char* state, int slice)
+void do_magick(char* filename, char* state) //, int slice)
 {
   ImageParams img_param;
   FileInfo *file_info = NULL;
@@ -246,7 +248,7 @@ void do_magick(char* filename, char* state, int slice)
   std::string err_msg;
   std::vector<Magick::Image> image_sequence;
   if (LoadImageAndScale(filename, matrix->width(), matrix->height(),
-                        fill_width, fill_height, &image_sequence, &err_msg)) {
+                        false, false, &image_sequence, &err_msg)) {
     file_info = new FileInfo();
     file_info->params = img_param;
     file_info->content_stream = new rgb_matrix::MemStreamIO();
@@ -260,7 +262,7 @@ void do_magick(char* filename, char* state, int slice)
 }
 
 static int beginUART() {
-  int serial_fd = open("/dev/ttyS0", O_RDWR);
+  serial_fd = open("/dev/ttyS0", O_RDWR);
   struct termios tty;
   if(tcgetattr(serial_fd, &tty) != 0) {
       printf("Error %i from tcgetattr: %s\n", errno, strerror(errno));
@@ -292,20 +294,127 @@ static int beginUART() {
   return serial_fd;
 }
 
+const char IDLE_SUFFIX[] = "_Idle";
+
+static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
+  printf("PROCESS_UART_COMMAND : %d/%lu",cmd,len);
+  if( cmd == 0x01 )
+  {
+    // receive an image
+    printf("Received image with length %zu\n", len);
+
+    // payload[0],[1] = payload size
+    // Process the image data in payload
+    uint16_t name_size = payload[2]; // big endian
+    char filename[256]; // max POSIX filename length
+    if (name_size >= sizeof(filename)) {
+      // Filename too big for buffer
+      return;
+    }
+    // Extract filename
+    memcpy(filename, payload + 3, name_size);
+    filename[name_size] = '\0'; // terminate the filename with a null character
+
+    //////////////// ALL THIS JUST TO NAME THE DAMN FILE ////////////////
+    // Find first numeric character in filename
+    size_t base_len = 0;
+    while (base_len < name_size && !(filename[base_len] >= '0' && filename[base_len] <= '9')) {
+      base_len++;
+    }
+    if (base_len == 0) {
+      // original filename is invalid as it contains numbers at the beginning
+      // it actually isn't allowed to contain numbers at all EXCEPT the index at the end
+      return;
+    }
+    char folder[512];
+    char stateName[512];
+    snprintf(folder, sizeof(folder), "%.*s", (int)base_len, filename);
+
+    // check if _Idle
+    if( base_len > 6 && strcmp(folder + base_len - 5, IDLE_SUFFIX) == 0 )
+    {
+      memcpy(stateName, folder, base_len - 5);
+    }
+    else
+    {
+      memcpy(stateName, folder, base_len);
+    }
+
+    // Make directory if it doesn't exist
+    if (mkdir(folder, 0777) && errno != EEXIST) {
+      printf("Failed to create folder: %s\n", folder);
+      return;
+    }
+
+    // Create full path to save file
+    char fullpath[512];
+    snprintf(fullpath, sizeof(fullpath), "%s/%s", folder, filename);
+
+    // Extract file contents
+    size_t file_size = len - name_size - 3;
+    uint8_t* file_contents = payload + 3 + name_size;
+
+    FILE* f = fopen(fullpath, "wb");
+    if (f) {
+      fwrite(file_contents, 1, file_size, f);
+      fclose(f);
+      printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
+      do_magick(fullpath, stateName); // store in canvas
+    } else {
+      printf("Failed to open file for writing: %s\n", fullpath);
+    }
+  }
+  else if (cmd == 0x02)
+  {
+    // change animation state
+    // 0x02 -> length [0] -> string -> \0
+
+    uint8_t payload_len = payload[0];
+    char newState[payload_len];
+    memcpy(newState, payload+1, payload_len);
+
+    anim_state = newState;
+  }
+  else if (cmd == 0x03)
+  {
+    // receive a swipe input
+    uint8_t payload_len = payload[0];
+    char dir[payload_len]; // max length of direction string
+    if (payload_len >= sizeof(dir)) {
+      // Filename too big for buffer (should be impossible)
+      return;
+    }
+
+    memcpy(dir, payload + 1, payload_len);
+    dir[payload_len] = '\0'; // Terminate the string with a null character
+    printf("Receiving swipe: %s\n", dir);
+
+    for (uint8_t i = 0; i < payload_len; ++i) {
+      char letter = dir[i];
+      // @Johnathan back to you, i don't really know what you want to do with the swipe inputs.
+      printf("Letter %d: %c\n", i, letter);
+    }
+  }
+}
+
 // poll UART and process if RX
-static void *process_uart()
+static void *process_uart(void *arg)
 {
   int bytes;
-  while(1)
+  while(!interrupt_received)
   {
     ioctl(serial_fd, FIONREAD, &bytes);
     if(bytes <= 0 )
+    {
       continue;
+    }
+
+    printf("BYTES RECEIVED : %d",bytes);
     
     int r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head); // read up to end of available buffer
     uart_buf_head += r;
 
-    std::vector<char> full_read; // full command read only
+    std::vector<uint8_t> full_read; // full command read only
 
     // get full command
     if( uart_buf_head > 0 )
@@ -365,102 +474,11 @@ static void *process_uart()
         uart_buf_head = c; // excess from last read
       }
 
-      process_uart_command(full_read[0], full_read + 1, payload_len + payhead);
+
+      process_uart_command(full_read[0], full_read.data() + 1, payload_len + payhead);
     }
   }
-}
-
-static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
-  switch (cmd) {
-      case 0x01:
-          // receive an image
-          printf("Received image with length %zu\n", len);
-
-          // payload[0],[1] = payload size
-          // Process the image data in payload
-          uint16_t name_size = payload[2]; // big endian
-          char filename[256]; // max POSIX filename length
-          if (name_size >= sizeof(filename)) {
-              // Filename too big for buffer
-              return;
-          }
-          // Extract filename
-          memcpy(filename, payload + 3, name_size);
-          filename[name_size] = '\0'; // terminate the filename with a null character
-
-          //////////////// ALL THIS JUST TO NAME THE DAMN FILE ////////////////
-          // Find first numeric character in filename
-          size_t base_len = 0;
-          while (base_len < name_size && !(filename[base_len] >= '0' && filename[base_len] <= '9')) {
-              base_len++;
-          }
-          if (base_len == 0) {
-              // original filename is invalid as it contains numbers at the beginning
-              // it actually isn't allowed to contain numbers at all EXCEPT the index at the end
-              return;
-          }
-          char folder[512];
-          snprintf(folder, sizeof(folder), "%.*s", (int)base_len, filename);
-
-          // Make directory if it doesn't exist
-          if (mkdir(folder, 0777) && errno != EEXIST) {
-            printf("Failed to create folder: %s\n", folder);
-            return;
-          }
-
-          // Create full path to save file
-          char fullpath[512];
-          snprintf(fullpath, sizeof(fullpath), "%s/%s", folder, filename);
-
-          // Extract file contents
-          size_t file_size = len - name_size - 3;
-          uint8_t* file_contents = payload + 3 + name_size;
-
-          FILE* f = fopen(fullpath, "wb");
-          if (f) {
-              fwrite(file_contents, 1, file_size, f);
-              fclose(f);
-              printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
-              do_magick(fullpath); // store in canvas
-          } else {
-              printf("Failed to open file for writing: %s\n", fullpath);
-          }
-
-          break;
-
-      case 0x02:
-          // change animation state
-          // 0x02 -> length [0] -> string -> \0
-
-          uint8_t payload_len = payload[0];
-          char newState[payload_len];
-          memcpy(newState, payload+1, payload_len);
-
-          anim_state = newState;
-          break;
-      case 0x03:
-          // receive a swipe input
-          uint8_t payload_len = payload[0];
-          char dir[2]; // max length of direction string
-          if (payload_len >= sizeof(dir)) {
-              // Filename too big for buffer (should be impossible)
-              return;
-          }
-
-          memcpy(dir, payload + 1, dir_length);
-          dir[dir_length] = '\0'; // Terminate the string with a null character
-          printf("Receiving swipe: %s\n", dir);
-
-          for (uint8_t i = 0; i < dir_length; ++i) {
-            char letter = dir[i];
-            // @Johnathan back to you, i don't really know what you want to do with the swipe inputs.
-            printf("Letter %d: %c\n", i, letter);
-          }
-          break;
-      default:
-          // unknown command
-          break;
-  }
+  pthread_exit(NULL);
 }
 
 static int usage(const char *progname) {
@@ -514,7 +532,8 @@ int main(int argc, char *argv[]) {
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
 
-  while( (serial_fd = open("/dev/ttyS0", O_RDONLY) ) < 0 )
+  // while( (serial_fd = open("/dev/ttyS0", O_RDONLY) ) < 0 )
+  while( beginUART() < 0 )
   {
     fprintf( stderr, "UNABLE TO OPEN SERIAL");
     sleep(3);
@@ -554,16 +573,6 @@ int main(int argc, char *argv[]) {
   // Set defaults.
   ImageParams img_param;
   
-  std::string path = "/home/dietpi/rpi-led-hologram/utils/images/";
-
-  for( const auto & entry : fs::recursive_directory_iterator(path) )
-  {
-    if(entry.is_regular_file())
-    {
-      std::cout << entry.path() << std::endl;
-    }
-  }
-
   for (int i = 0; i < argc; ++i) {
     filename_params[argv[i]] = img_param;
   }
@@ -746,47 +755,41 @@ int main(int argc, char *argv[]) {
   // char read_buf [UART_BUF_SIZE];
   // size_t uart_buf_head = 0; // how many valid bytes currently in uart_buf
 
-  pthread_t p;
-  pthread_create(&p, NULL, process_uart, NULL);
+  pthread_create(&uart_thread, NULL, process_uart, NULL);
+
+  fprintf(stderr, "PTHREAD : %lu\n",uart_thread);
 
   
   // do the actual displaying
   do {
-    // if (do_shuffle) {
-    //   std::random_shuffle(file_imgs.begin(), file_imgs.end());
-    // }
     size_t i = 0;
-    // for (size_t i = 0; i < file_imgs.size() && !interrupt_received; ++i) {
-    while (i < file_imgs.size() && !interrupt_received) {
+    if(do_reset == true){
+      sync_frame = 0;
+      i = 0;
+      do_reset = false;
+    }
 
-      if(do_reset == true){
-        sync_frame = 0;
-        i = 0;
-        do_reset = false;
-      }
+    DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
 
-      DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
-
-      sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
-      if( sync_last != sync)
+    sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
+    if( sync_last != sync)
+    {
+      sync_last = sync;
+      // only loop on idle
+      if (sync == 0 && sync_loop == 1 )
       {
-        sync_last = sync;
-        // only loop on idle
-        if (sync == 0 && sync_loop == 1 )
-        {
-          i = sync_frame;
-        }
+        i = sync_frame;
       }
-      if( ++i > file_imgs.size()-1 )
-      {
-        sync_loop = 1;
-        sync_frame = idle_start;
-        i = idle_start;
-      }
+    }
+    if( ++i > file_imgs.size()-1 )
+    {
+      sync_loop = 1;
+      sync_frame = idle_start;
+      i = idle_start;
     }
   } while (do_forever && !interrupt_received);
 
-  pthread_join(p, nullptr);
+  pthread_join(uart_thread, nullptr);
 
   if (interrupt_received) {
     fprintf(stderr, "Caught signal. Exiting.\n");
