@@ -365,14 +365,17 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
     size_t file_size = len - name_size - 3;
     uint8_t* file_contents = payload + 3 + name_size;
 
-    FILE* f = fopen(fullpath, "wb");
-    if (f) {
-      fwrite(file_contents, 1, file_size, f);
-      fclose(f);
-      printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
-      do_magick(fullpath, stateName); // store in canvas
-    } else {
-      printf("Failed to open file for writing: %s\n", fullpath);
+    if ( !fs::exists(fullpath) )
+    {
+      FILE* f = fopen(fullpath, "wb");
+      if (f) {
+        fwrite(file_contents, 1, file_size, f);
+        fclose(f);
+        printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
+        do_magick(fullpath, stateName); // store in canvas
+      } else {
+        printf("Failed to open file for writing: %s\n", fullpath);
+      }
     }
   }
   else if (cmd == 0x02)
