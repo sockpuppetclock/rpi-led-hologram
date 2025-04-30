@@ -3,4 +3,5 @@ video-viewer
 text-scroller
 hologram-viewer
 uart-test
-images
+images/*
+!images/Idle
