@@ -34,10 +34,14 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <filesystem>
+
 #include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
+
+#include <pthread.h>
 
 #include <Magick++.h>
 #include <magick/image.h>
@@ -53,10 +57,19 @@ using rgb_matrix::RGBMatrix;
 using rgb_matrix::StreamReader;
 
 #define SPIN_SYNC 3 // gpio
-#define UART_BUF_SIZE 2048 // 1024 should be enough but not by much
+#define UART_BUF_SIZE 4096 // 1024 should be enough but not by much
 
 typedef int64_t tmillis_t;
 static const tmillis_t distant_future = (1LL<<40); // that is a while.
+
+volatile char* anim_state = NULL;
+static int serial_fd;
+static volatile char read_buf[UART_BUF_SIZE]; // rolling UART buffer
+static volatile size_t uart_buf_head = 0; // length of stored buffer
+static volatile bool read_busy = 0; // if process_uart is running
+static RGBMatrix *matrix;
+
+namespace fs = std::filesystem
 
 struct ImageParams {
   ImageParams() : anim_duration_ms(distant_future), wait_ms(1500),
@@ -187,11 +200,11 @@ static bool LoadImageAndScale(const char *filename,
 }
 
 void DisplayAnimation(const FileInfo *file,
-                      RGBMatrix *matrix, FrameCanvas *offscreen_canvas) {
+                      RGBMatrix *m, FrameCanvas *offscreen_canvas) {
   const tmillis_t duration_ms = (file->is_multi_frame
                                  ? file->params.anim_duration_ms
                                  : file->params.wait_ms);
-  rgb_matrix::StreamReader reader(file->content_stream);
+  rgb_matrix::StreamReader reader(file->content_stream); // get the image stream
   int loops = file->params.loops;
   const tmillis_t end_time_ms = GetTimeInMillis() + duration_ms;
   const tmillis_t override_anim_delay = file->params.anim_delay_ms;
@@ -206,7 +219,7 @@ void DisplayAnimation(const FileInfo *file,
       const tmillis_t anim_delay_ms =
         override_anim_delay >= 0 ? override_anim_delay : delay_us / 1000;
       const tmillis_t start_wait_ms = GetTimeInMillis();
-      offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas,
+      offscreen_canvas = m->SwapOnVSync(offscreen_canvas,
                                              file->params.vsync_multiple);
       const tmillis_t time_already_spent = GetTimeInMillis() - start_wait_ms;
       SleepMillis(anim_delay_ms - time_already_spent);
@@ -216,9 +229,9 @@ void DisplayAnimation(const FileInfo *file,
 }
 
 static int beginUART() {
-  int fd = open("/dev/ttyS0", O_RDWR);
+  int serial_fd = open("/dev/ttyS0", O_RDWR);
   struct termios tty;
-  if(tcgetattr(fd, &tty) != 0) {
+  if(tcgetattr(serial_fd, &tty) != 0) {
       printf("Error %i from tcgetattr: %s\n", errno, strerror(errno));
       return -1;
   }
@@ -241,32 +254,166 @@ static int beginUART() {
   tty.c_cc[VMIN] = 0;
   cfsetispeed(&tty, B2000000);
   cfsetospeed(&tty, B2000000);
-  if (tcsetattr(fd, TCSANOW, &tty) != 0) {
+  if (tcsetattr(serial_fd, TCSANOW, &tty) != 0) {
       printf("Error %i from tcsetattr: %s\n", errno, strerror(errno));
       return -1;
   }
-  return fd;
+  return serial_fd;
 }
+
+static void *process_uart(void *arg)
+{
+  read_busy = true;
+  int r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head); // read up to end of available buffer
+  uart_buf_head += r;
+
+  std::vector<char> full_read; // full command read only
+
+  // get full command
+  if( uart_buf_head > 0 )
+  {
+    full_read.push_back(read_buf[0]);
+
+    uint16_t payload_len;
+    int payhead = 0; // 
+
+    if( full_read[0] == 0x01 ) // has 2-byte length
+    {
+      // read up until command + payload length
+      while( uart_buf_head < 3 )
+      {
+        r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
+        uart_buf_head += r;
+      }
+      full_read.push_back(read_buf[1]);full_read.push_back(read_buf[2]);
+      payload_len = (full_read[1] << 8) | full_read[2]; // big endian
+      payhead = 2;
+    }
+    else // 1-byte length
+    {
+      while( uart_buf_head < 2 )
+      {
+        r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
+        uart_buf_head += r;
+      }
+      full_read.push_back(read_buf[1]);
+      payload_len = full_read[1];
+      payhead = 1;
+    }
+
+    int len = 0;
+    // clear buffer head
+    while( uart_buf_head > len + payhead && len < payload_len )
+    {
+      full_read.push_back(read_buf[len+payhead]);
+      len++;
+    }
+    // move read buffer back if excess from last read
+    if( len == payload_len )
+    {
+      uart_buf_head = uart_buf_head - len - payhead;
+      memmove(read_buf, read_buf + len + payhead, uart_buf_head );
+    }
+
+    while(len < payload_len)
+    {
+      r = read(serial_fd, read_buf, UART_BUF_SIZE);
+      int c = 0;
+      while(r > c && len < payload_len)
+      {
+        full_read.push_back(read_buf[c++]);
+        len++;
+      }
+      uart_buf_head = c; // excess from last read
+    }
+
+    process_uart_command(full_read[0], full_read + 1, payload_len + payhead);
+  }
+
+  read_busy = false;
+  pthread_exit(nullptr);
+}
+
+  //   if(head >= 3)
+  //   {
+  //     // check if length has payload length
+  //     if( full_read[0] == 0x01 )
+  //     {
+  //       uint16_t payload_len = (full_read[1] << 8) | full_read[2]; // big endian
+  //       // read until fully sent
+  //       while(head < payload_len)
+  //       {
+  //         r = read(serial_fd, read_buf, UART_BUF_SIZE);
+  //         for( k = 0; k < r; k++ )
+  //         {
+  //           full_read.push_back(read_buf[k]);
+  //         }
+  //         head += r;
+  //       }
+  //     }
+  //   }
+  //   else // head <= 3
+  //   {
+  //     r = read(serial_fd, read_buff, UART_BUF_SIZE);
+  //     for( k = 0; k < r ; k++ )
+  //     {
+  //       full_read.push_back(read_buf[k]);
+  //     }
+  //   }
+  // }
+// }
+
+    // size_t consumed = 0;
+    // while (uart_buf_head - consumed >= 3) // plus three accounting for 1 command byte and 2 length bytes
+    // {
+    //   char cmd = read_buf[consumed];
+    //   uint16_t payload_len = (read_buf[consumed + 1] << 8) | read_buf[consumed + 2]; // big endian payload length
+
+    //   if (payload_len > UART_BUF_SIZE - 3) {
+    //     // payload length is too long to fit in buffer
+    //     fprintf(stderr, "Payload length %d is too long\n", payload_len);
+    //     uart_buf_head = 0;
+    //     consumed = 0;
+    //     break;
+    //   }
+    //   if (uart_buf_head - consumed < payload_len + 3) {
+    //     // incomplete payload.. wait for more data
+    //     break;
+    //   }
+
+    //   // we have a full command! process it
+    //   process_uart_command(cmd, read_buf + consumed + 3, payload_len);
+    //   consumed += payload_len + 3; // move to next command
+
+    //   if (consumed > 0)
+    //   {
+    //     memmove(read_buf, read_buf + consumed, uart_buf_head - consumed);
+    //     uart_buf_head -= consumed;
+    //   }
+    // }
+  // }
+  // memset(&read_buf, '\0', sizeof(read_buf));
+
+//   return NULL
+// }
 
 static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
   switch (cmd) {
       case 0x01:
           // receive an image
           printf("Received image with length %zu\n", len);
+
+          // payload[0],[1] = payload size
           // Process the image data in payload
-          uint16_t name_size = (payload[0] << 8) | payload[1]; // big endian
+          uint16_t name_size = payload[2]; // big endian
           char filename[256]; // max POSIX filename length
           if (name_size >= sizeof(filename)) {
               // Filename too big for buffer
               return;
           }
           // Extract filename
-          memcpy(filename, payload + 2, name_size);
+          memcpy(filename, payload + 3, name_size);
           filename[name_size] = '\0'; // terminate the filename with a null character
-
-          // Extract file contents
-          uint8_t* file_contents = payload + 2 + name_size;
-          size_t file_size = len - 2 - name_size;
 
           //////////////// ALL THIS JUST TO NAME THE DAMN FILE ////////////////
           // Find first numeric character in filename
@@ -279,7 +426,7 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
               // it actually isn't allowed to contain numbers at all EXCEPT the index at the end
               return;
           }
-          char folder[300];
+          char folder[512];
           snprintf(folder, sizeof(folder), "%.*s", (int)base_len, filename);
 
           // Make directory if it doesn't exist
@@ -292,9 +439,9 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
           char fullpath[512];
           snprintf(fullpath, sizeof(fullpath), "%s/%s", folder, filename);
 
-          // yay now we can save it
-          uint8_t* file_contents = payload + 2 + name_size;
-          size_t file_size = len - 2 - name_size;
+          // Extract file contents
+          size_t file_size = len - name_size - 3;
+          uint8_t* file_contents = payload + 3 + name_size;
 
           FILE* f = fopen(fullpath, "wb");
           if (f) {
@@ -309,7 +456,13 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
 
       case 0x02:
           // change animation state
-          // @Johnathan this one is for you. im not familiar with how you want to handle all the animations running at once
+          // 0x02 -> length [0] -> string -> \0
+
+          uint8_t payload_len = payload[0];
+          char newState[payload_len];
+          memcpy(newState, payload+1, payload_len);
+
+          anim_state = newState;
           break;
       case 0x03:
           // receive a swipe input
@@ -328,10 +481,32 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
             char letter = dir[i];
             // @Johnathan back to you, i don't really know what you want to do with the swipe inputs.
             printf("Letter %d: %c\n", i, letter);
+          }
           break;
       default:
           // unknown command
           break;
+  }
+}
+
+void do_magick(char* filename)
+{
+  ImageParams img_param;
+  FileInfo *file_info = NULL;
+
+  std::string err_msg;
+  std::vector<Magick::Image> image_sequence;
+  if (LoadImageAndScale(filename, matrix->width(), matrix->height(),
+                        fill_width, fill_height, &image_sequence, &err_msg)) {
+    file_info = new FileInfo();
+    file_info->params = img_param;
+    file_info->content_stream = new rgb_matrix::MemStreamIO();
+    file_info->is_multi_frame = image_sequence.size() > 1;
+    rgb_matrix::StreamWriter out(file_info->content_stream);
+    for (size_t i = 0; i < image_sequence.size(); ++i) {
+      const Magick::Image &img = image_sequence[i];
+      StoreInStream(img, 0, do_center, offscreen_canvas, &out);
+    }         
   }
 }
 
@@ -386,9 +561,7 @@ int main(int argc, char *argv[]) {
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
 
-  int fd;
-
-  while( (fd = open("/dev/ttyS0", O_RDONLY) ) < 0 )
+  while( (serial_fd = open("/dev/ttyS0", O_RDONLY) ) < 0 )
   {
     fprintf( stderr, "UNABLE TO OPEN SERIAL");
     sleep(3);
@@ -425,8 +598,21 @@ int main(int argc, char *argv[]) {
   // parameters.
   std::map<const void *, struct ImageParams> filename_params;
 
+  std::map<std::string, std::vector<FileInfo*>> file_list;
+
   // Set defaults.
   ImageParams img_param;
+  
+  std::string path = "/home/dietpi/rpi-led-hologram/utils/images/";
+
+  for( const auto & entry : fs::recursive_directory_iterator(path) )
+  {
+    if(entry.is_regular_file())
+    {
+      std::cout << entry.path() << std::endl;
+    }
+  }
+
   for (int i = 0; i < argc; ++i) {
     filename_params[argv[i]] = img_param;
   }
@@ -516,7 +702,7 @@ int main(int argc, char *argv[]) {
 
   // Prepare matrix
   runtime_opt.do_gpio_init = (stream_output == NULL);
-  RGBMatrix *matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
+  matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL)
     return 1;
 
@@ -576,44 +762,45 @@ int main(int argc, char *argv[]) {
         // StoreInStream(img, delay_time_us, do_center, offscreen_canvas,
         //            global_stream_writer ? global_stream_writer : &out);
         StoreInStream(img, 0, do_center, offscreen_canvas, &out);
-                      
-      }
-    } else {
-      // Ok, not an image. Let's see if it is one of our streams.
-      int fd = open(filename, O_RDONLY);
-      if (fd >= 0) {
-        file_info = new FileInfo();
-        file_info->params = filename_params[filename];
-        if (do_mmap) {
-          rgb_matrix::MemMapViewInput *stream_input =
-            new rgb_matrix::MemMapViewInput(fd);
-          if (stream_input->IsInitialized()) {
-            file_info->content_stream = stream_input;
-          } else {
-            delete stream_input;
-          }
-        }
-        if (!file_info->content_stream) {
-          file_info->content_stream = new rgb_matrix::FileStreamIO(fd);
-        }
-        StreamReader reader(file_info->content_stream);
-        if (reader.GetNext(offscreen_canvas, NULL)) {  // header+size ok
-          file_info->is_multi_frame = reader.GetNext(offscreen_canvas, NULL);
-          reader.Rewind();
-          if (global_stream_writer) {
-            CopyStream(&reader, global_stream_writer, offscreen_canvas);
-          }
-        } else {
-          err_msg += "; Can't read as image or compatible stream";
-          delete file_info->content_stream;
-          delete file_info;
-          file_info = NULL;
-        }
-      }
-      else {
-        perror("Opening file");
-      }
-    }
+      }         
+    }     
+    
+    // } else {
+    //   // Ok, not an image. Let's see if it is one of our streams.
+    //   int fd = open(filename, O_RDONLY);
+    //   if (fd >= 0) {
+    //     file_info = new FileInfo();
+    //     file_info->params = filename_params[filename];
+    //     if (do_mmap) {
+    //       rgb_matrix::MemMapViewInput *stream_input =
+    //         new rgb_matrix::MemMapViewInput(fd);
+    //       if (stream_input->IsInitialized()) {
+    //         file_info->content_stream = stream_input;
+    //       } else {
+    //         delete stream_input;
+    //       }
+    //     }
+    //     if (!file_info->content_stream) {
+    //       file_info->content_stream = new rgb_matrix::FileStreamIO(fd);
+    //     }
+    //     StreamReader reader(file_info->content_stream);
+    //     if (reader.GetNext(offscreen_canvas, NULL)) {  // header+size ok
+    //       file_info->is_multi_frame = reader.GetNext(offscreen_canvas, NULL);
+    //       reader.Rewind();
+    //       if (global_stream_writer) {
+    //         CopyStream(&reader, global_stream_writer, offscreen_canvas);
+    //       }
+    //     } else {
+    //       err_msg += "; Can't read as image or compatible stream";
+    //       delete file_info->content_stream;
+    //       delete file_info;
+    //       file_info = NULL;
+    //     }
+    //   }
+    //   else {
+    //     perror("Opening file");
+    //   }
+    // }
 
     if (file_info) {
       file_imgs.push_back(file_info);
@@ -669,14 +856,14 @@ int main(int argc, char *argv[]) {
 
   bool sync, sync_last = 0, sync_loop = 0;
   int sync_frame = 0;
-  char read_buf [UART_BUF_SIZE];
-  size_t uart_buf_len = 0; // how many valid bytes currently in uart_buf
+  // char read_buf [UART_BUF_SIZE];
+  // size_t uart_buf_head = 0; // how many valid bytes currently in uart_buf
   int bytes;
   // do the actual displaying
   do {
-    if (do_shuffle) {
-      std::random_shuffle(file_imgs.begin(), file_imgs.end());
-    }
+    // if (do_shuffle) {
+    //   std::random_shuffle(file_imgs.begin(), file_imgs.end());
+    // }
     size_t i = 0;
     // for (size_t i = 0; i < file_imgs.size() && !interrupt_received; ++i) {
     while (i < file_imgs.size() && !interrupt_received) {
@@ -687,44 +874,12 @@ int main(int argc, char *argv[]) {
         do_reset = false;
       }
 
-      ioctl(fd, FIONREAD, &bytes);
-      if( bytes > 0 )
+      // poll UART and process if RX
+      ioctl(serial_fd, FIONREAD, &bytes);
+      if( bytes > 0  && !read_busy)
       {
-        int r = read(fd, uart_buf + uart_buf_len, UART_BUF_SIZE - uart_buf_len);
-        if (r > 0) {
-          uart_buf_len += r
-
-          size_t consumed = 0;
-          while (uart_buf_len - consumed >= 3) // plus three accounting for 1 command byte and 2 length bytes
-          {
-            char cmd cmd = uart_buf[consumed];
-            uint16_t payload_len = (uart_buf[consumed + 1] << 8) | uart_buf[consumed + 2]; // big endian payload length
-
-            if (payload_len > UART_BUF_SIZE - 3) {
-              // payload length is too long to fit in buffer
-              fprintf(stderr, "Payload length %d is too long\n", payload_len);
-              uart_buf_len = 0;
-              consumed = 0;
-              break;
-            }
-            if (uart_buf_len - consumed < payload_len + 3) {
-              // incomplete payload.. wait for more data
-              break;
-            }
-
-            // we have a full command! process it
-            process_uart_command(cmd, uart_buf + consumed + 3, payload_len);
-            consumed += payload_len + 3; // move to next command
-
-            if (consumed > 0)
-            {
-              memmove(uart_buf, uart_buf + consumed, uart_buf_len - consumed);
-              uart_buf_len -= consumed;
-            }
-          }
-        memset(&read_buf, '\0', sizeof(read_buf));
-        read(fd, &read_buf, sizeof(read_buf));
-        uartcycle(read_buf);
+        pthread_t p;
+        pthread_create(&p, NULL, process_uart, NULL);
       }
 
       DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
