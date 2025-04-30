@@ -62,12 +62,14 @@ using rgb_matrix::StreamReader;
 typedef int64_t tmillis_t;
 static const tmillis_t distant_future = (1LL<<40); // that is a while.
 
-volatile char* anim_state = NULL;
+static volatile char* anim_state = NULL;
 static int serial_fd;
 static volatile char read_buf[UART_BUF_SIZE]; // rolling UART buffer
 static volatile size_t uart_buf_head = 0; // length of stored buffer
 static volatile bool read_busy = 0; // if process_uart is running
+
 static RGBMatrix *matrix;
+static FrameCanvas *offscreen_canvas;
 
 namespace fs = std::filesystem
 
@@ -85,6 +87,13 @@ struct FileInfo {
   ImageParams params;      // Each file might have specific timing settings
   bool is_multi_frame = false;
   rgb_matrix::StreamIO *content_stream = nullptr;
+};
+
+struct AnimState {
+  char *name;
+  rgb_matrix::StreamIO* play_streams[];
+  rgb_matrix::StreamIO* idle_streams[];
+  int loop_point = 0;
 };
 
 volatile bool interrupt_received = false;
@@ -200,7 +209,7 @@ static bool LoadImageAndScale(const char *filename,
 }
 
 void DisplayAnimation(const FileInfo *file,
-                      RGBMatrix *m, FrameCanvas *offscreen_canvas) {
+                      RGBMatrix *m, FrameCanvas *o_c) {
   const tmillis_t duration_ms = (file->is_multi_frame
                                  ? file->params.anim_duration_ms
                                  : file->params.wait_ms);
@@ -215,16 +224,38 @@ void DisplayAnimation(const FileInfo *file,
        ++k) {
     uint32_t delay_us = 0;
     while (!interrupt_received && GetTimeInMillis() <= end_time_ms
-           && reader.GetNext(offscreen_canvas, &delay_us)) {
+           && reader.GetNext(o_c, &delay_us)) {
       const tmillis_t anim_delay_ms =
         override_anim_delay >= 0 ? override_anim_delay : delay_us / 1000;
       const tmillis_t start_wait_ms = GetTimeInMillis();
-      offscreen_canvas = m->SwapOnVSync(offscreen_canvas,
+      o_c = m->SwapOnVSync(o_c,
                                              file->params.vsync_multiple);
       const tmillis_t time_already_spent = GetTimeInMillis() - start_wait_ms;
       SleepMillis(anim_delay_ms - time_already_spent);
     }
     reader.Rewind();
+  }
+}
+
+// store file in canvas stream
+void do_magick(char* filename, char* state, int slice)
+{
+  ImageParams img_param;
+  FileInfo *file_info = NULL;
+
+  std::string err_msg;
+  std::vector<Magick::Image> image_sequence;
+  if (LoadImageAndScale(filename, matrix->width(), matrix->height(),
+                        fill_width, fill_height, &image_sequence, &err_msg)) {
+    file_info = new FileInfo();
+    file_info->params = img_param;
+    file_info->content_stream = new rgb_matrix::MemStreamIO();
+    file_info->is_multi_frame = image_sequence.size() > 1;
+    rgb_matrix::StreamWriter out(file_info->content_stream);
+    for (size_t i = 0; i < image_sequence.size(); ++i) {
+      const Magick::Image &img = image_sequence[i];
+      StoreInStream(img, 0, false, offscreen_canvas, &out);
+    }
   }
 }
 
@@ -261,141 +292,83 @@ static int beginUART() {
   return serial_fd;
 }
 
-static void *process_uart(void *arg)
+// poll UART and process if RX
+static void *process_uart()
 {
-  read_busy = true;
-  int r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head); // read up to end of available buffer
-  uart_buf_head += r;
-
-  std::vector<char> full_read; // full command read only
-
-  // get full command
-  if( uart_buf_head > 0 )
+  int bytes;
+  while(1)
   {
-    full_read.push_back(read_buf[0]);
+    ioctl(serial_fd, FIONREAD, &bytes);
+    if(bytes <= 0 )
+      continue;
+    
+    int r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head); // read up to end of available buffer
+    uart_buf_head += r;
 
-    uint16_t payload_len;
-    int payhead = 0; // 
+    std::vector<char> full_read; // full command read only
 
-    if( full_read[0] == 0x01 ) // has 2-byte length
+    // get full command
+    if( uart_buf_head > 0 )
     {
-      // read up until command + payload length
-      while( uart_buf_head < 3 )
+      full_read.push_back(read_buf[0]);
+
+      uint16_t payload_len;
+      int payhead = 0; // 
+
+      if( full_read[0] == 0x01 ) // has 2-byte length
       {
-        r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
-        uart_buf_head += r;
+        // read up until command + payload length
+        while( uart_buf_head < 3 )
+        {
+          r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
+          uart_buf_head += r;
+        }
+        full_read.push_back(read_buf[1]);full_read.push_back(read_buf[2]);
+        payload_len = (full_read[1] << 8) | full_read[2]; // big endian
+        payhead = 2;
       }
-      full_read.push_back(read_buf[1]);full_read.push_back(read_buf[2]);
-      payload_len = (full_read[1] << 8) | full_read[2]; // big endian
-      payhead = 2;
-    }
-    else // 1-byte length
-    {
-      while( uart_buf_head < 2 )
+      else // 1-byte length
       {
-        r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
-        uart_buf_head += r;
+        while( uart_buf_head < 2 )
+        {
+          r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
+          uart_buf_head += r;
+        }
+        full_read.push_back(read_buf[1]);
+        payload_len = full_read[1];
+        payhead = 1;
       }
-      full_read.push_back(read_buf[1]);
-      payload_len = full_read[1];
-      payhead = 1;
-    }
 
-    int len = 0;
-    // clear buffer head
-    while( uart_buf_head > len + payhead && len < payload_len )
-    {
-      full_read.push_back(read_buf[len+payhead]);
-      len++;
-    }
-    // move read buffer back if excess from last read
-    if( len == payload_len )
-    {
-      uart_buf_head = uart_buf_head - len - payhead;
-      memmove(read_buf, read_buf + len + payhead, uart_buf_head );
-    }
-
-    while(len < payload_len)
-    {
-      r = read(serial_fd, read_buf, UART_BUF_SIZE);
-      int c = 0;
-      while(r > c && len < payload_len)
+      int len = 0;
+      // clear buffer head
+      while( uart_buf_head > len + payhead && len < payload_len )
       {
-        full_read.push_back(read_buf[c++]);
+        full_read.push_back(read_buf[len+payhead]);
         len++;
       }
-      uart_buf_head = c; // excess from last read
+      // move read buffer back if excess from last read
+      if( len == payload_len )
+      {
+        uart_buf_head = uart_buf_head - len - payhead;
+        memmove(read_buf, read_buf + len + payhead, uart_buf_head );
+      }
+
+      while(len < payload_len)
+      {
+        r = read(serial_fd, read_buf, UART_BUF_SIZE);
+        int c = 0;
+        while(r > c && len < payload_len)
+        {
+          full_read.push_back(read_buf[c++]);
+          len++;
+        }
+        uart_buf_head = c; // excess from last read
+      }
+
+      process_uart_command(full_read[0], full_read + 1, payload_len + payhead);
     }
-
-    process_uart_command(full_read[0], full_read + 1, payload_len + payhead);
   }
-
-  read_busy = false;
-  pthread_exit(nullptr);
 }
-
-  //   if(head >= 3)
-  //   {
-  //     // check if length has payload length
-  //     if( full_read[0] == 0x01 )
-  //     {
-  //       uint16_t payload_len = (full_read[1] << 8) | full_read[2]; // big endian
-  //       // read until fully sent
-  //       while(head < payload_len)
-  //       {
-  //         r = read(serial_fd, read_buf, UART_BUF_SIZE);
-  //         for( k = 0; k < r; k++ )
-  //         {
-  //           full_read.push_back(read_buf[k]);
-  //         }
-  //         head += r;
-  //       }
-  //     }
-  //   }
-  //   else // head <= 3
-  //   {
-  //     r = read(serial_fd, read_buff, UART_BUF_SIZE);
-  //     for( k = 0; k < r ; k++ )
-  //     {
-  //       full_read.push_back(read_buf[k]);
-  //     }
-  //   }
-  // }
-// }
-
-    // size_t consumed = 0;
-    // while (uart_buf_head - consumed >= 3) // plus three accounting for 1 command byte and 2 length bytes
-    // {
-    //   char cmd = read_buf[consumed];
-    //   uint16_t payload_len = (read_buf[consumed + 1] << 8) | read_buf[consumed + 2]; // big endian payload length
-
-    //   if (payload_len > UART_BUF_SIZE - 3) {
-    //     // payload length is too long to fit in buffer
-    //     fprintf(stderr, "Payload length %d is too long\n", payload_len);
-    //     uart_buf_head = 0;
-    //     consumed = 0;
-    //     break;
-    //   }
-    //   if (uart_buf_head - consumed < payload_len + 3) {
-    //     // incomplete payload.. wait for more data
-    //     break;
-    //   }
-
-    //   // we have a full command! process it
-    //   process_uart_command(cmd, read_buf + consumed + 3, payload_len);
-    //   consumed += payload_len + 3; // move to next command
-
-    //   if (consumed > 0)
-    //   {
-    //     memmove(read_buf, read_buf + consumed, uart_buf_head - consumed);
-    //     uart_buf_head -= consumed;
-    //   }
-    // }
-  // }
-  // memset(&read_buf, '\0', sizeof(read_buf));
-
-//   return NULL
-// }
 
 static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
   switch (cmd) {
@@ -448,6 +421,7 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
               fwrite(file_contents, 1, file_size, f);
               fclose(f);
               printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
+              do_magick(fullpath); // store in canvas
           } else {
               printf("Failed to open file for writing: %s\n", fullpath);
           }
@@ -486,27 +460,6 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
       default:
           // unknown command
           break;
-  }
-}
-
-void do_magick(char* filename)
-{
-  ImageParams img_param;
-  FileInfo *file_info = NULL;
-
-  std::string err_msg;
-  std::vector<Magick::Image> image_sequence;
-  if (LoadImageAndScale(filename, matrix->width(), matrix->height(),
-                        fill_width, fill_height, &image_sequence, &err_msg)) {
-    file_info = new FileInfo();
-    file_info->params = img_param;
-    file_info->content_stream = new rgb_matrix::MemStreamIO();
-    file_info->is_multi_frame = image_sequence.size() > 1;
-    rgb_matrix::StreamWriter out(file_info->content_stream);
-    for (size_t i = 0; i < image_sequence.size(); ++i) {
-      const Magick::Image &img = image_sequence[i];
-      StoreInStream(img, 0, do_center, offscreen_canvas, &out);
-    }         
   }
 }
 
@@ -597,8 +550,6 @@ int main(int argc, char *argv[]) {
   // we can have two times the same image on the commandline list with different
   // parameters.
   std::map<const void *, struct ImageParams> filename_params;
-
-  std::map<std::string, std::vector<FileInfo*>> file_list;
 
   // Set defaults.
   ImageParams img_param;
@@ -708,7 +659,7 @@ int main(int argc, char *argv[]) {
 
   printf( "REQUEST INPUTS: %lu\n", matrix->RequestInputs(1<<SPIN_SYNC) );
 
-  FrameCanvas *offscreen_canvas = matrix->CreateFrameCanvas();
+  offscreen_canvas = matrix->CreateFrameCanvas();
 
   printf("Size: %dx%d. Hardware gpio mapping: %s\n",
          matrix->width(), matrix->height(), matrix_options.hardware_mapping);
@@ -750,58 +701,9 @@ int main(int argc, char *argv[]) {
       rgb_matrix::StreamWriter out(file_info->content_stream);
       for (size_t i = 0; i < image_sequence.size(); ++i) {
         const Magick::Image &img = image_sequence[i];
-        // int64_t delay_time_us = 0;
-        // if (file_info->is_multi_frame) {
-        //   delay_time_us = img.animationDelay() * 10000; // unit in 1/100s
-        // } else {
-        //   delay_time_us = file_info->params.wait_ms * 1000;  // single image.
-        // }
-        // if (delay_time_us <= 0) delay_time_us = 100 * 1000;  // 1/10sec
-
-        // delay_time_us = 0;
-        // StoreInStream(img, delay_time_us, do_center, offscreen_canvas,
-        //            global_stream_writer ? global_stream_writer : &out);
         StoreInStream(img, 0, do_center, offscreen_canvas, &out);
       }         
-    }     
-    
-    // } else {
-    //   // Ok, not an image. Let's see if it is one of our streams.
-    //   int fd = open(filename, O_RDONLY);
-    //   if (fd >= 0) {
-    //     file_info = new FileInfo();
-    //     file_info->params = filename_params[filename];
-    //     if (do_mmap) {
-    //       rgb_matrix::MemMapViewInput *stream_input =
-    //         new rgb_matrix::MemMapViewInput(fd);
-    //       if (stream_input->IsInitialized()) {
-    //         file_info->content_stream = stream_input;
-    //       } else {
-    //         delete stream_input;
-    //       }
-    //     }
-    //     if (!file_info->content_stream) {
-    //       file_info->content_stream = new rgb_matrix::FileStreamIO(fd);
-    //     }
-    //     StreamReader reader(file_info->content_stream);
-    //     if (reader.GetNext(offscreen_canvas, NULL)) {  // header+size ok
-    //       file_info->is_multi_frame = reader.GetNext(offscreen_canvas, NULL);
-    //       reader.Rewind();
-    //       if (global_stream_writer) {
-    //         CopyStream(&reader, global_stream_writer, offscreen_canvas);
-    //       }
-    //     } else {
-    //       err_msg += "; Can't read as image or compatible stream";
-    //       delete file_info->content_stream;
-    //       delete file_info;
-    //       file_info = NULL;
-    //     }
-    //   }
-    //   else {
-    //     perror("Opening file");
-    //   }
-    // }
-
+    }
     if (file_info) {
       file_imgs.push_back(file_info);
     } else {
@@ -809,21 +711,6 @@ int main(int argc, char *argv[]) {
               filename, err_msg.c_str());
     }
   }
-
-  // if (stream_output) {
-  //   delete global_stream_writer;
-  //   delete stream_io;
-  //   if (file_imgs.size()) {
-  //     fprintf(stderr, "Done: Output to stream %s; "
-  //             "this can now be opened with led-image-viewer with the exact same panel configuration settings such as rows, chain, parallel and hardware-mapping\n", stream_output);
-  //   }
-  //   if (do_shuffle)
-  //     fprintf(stderr, "Note: -s (shuffle) does not have an effect when generating streams.\n");
-  //   if (do_forever)
-  //     fprintf(stderr, "Note: -f (forever) does not have an effect when generating streams.\n");
-  //   // Done, no actual output to matrix.
-  //   return 0;
-  // }
 
   // Some parameter sanity adjustments.
   if (file_imgs.empty()) {
@@ -858,7 +745,11 @@ int main(int argc, char *argv[]) {
   int sync_frame = 0;
   // char read_buf [UART_BUF_SIZE];
   // size_t uart_buf_head = 0; // how many valid bytes currently in uart_buf
-  int bytes;
+
+  pthread_t p;
+  pthread_create(&p, NULL, process_uart, NULL);
+
+  
   // do the actual displaying
   do {
     // if (do_shuffle) {
@@ -872,14 +763,6 @@ int main(int argc, char *argv[]) {
         sync_frame = 0;
         i = 0;
         do_reset = false;
-      }
-
-      // poll UART and process if RX
-      ioctl(serial_fd, FIONREAD, &bytes);
-      if( bytes > 0  && !read_busy)
-      {
-        pthread_t p;
-        pthread_create(&p, NULL, process_uart, NULL);
       }
 
       DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
@@ -902,6 +785,8 @@ int main(int argc, char *argv[]) {
       }
     }
   } while (do_forever && !interrupt_received);
+
+  pthread_join(p, nullptr);
 
   if (interrupt_received) {
     fprintf(stderr, "Caught signal. Exiting.\n");
