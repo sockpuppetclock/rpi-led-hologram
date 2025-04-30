@@ -40,6 +40,8 @@ def SendImage(image_path):
     ser.write(data)
 
     #print(f"Sent image: {filename}")
+def SendRefresh():
+    ser.write(b'\x04')
 
 # set which folder contains the desired animation state
 def SendAnimationState(folder_name):

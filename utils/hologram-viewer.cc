@@ -22,6 +22,7 @@
 #include "led-matrix.h"
 #include "pixel-mapper.h"
 #include "content-streamer.h"
+#include "gpio.h"
 
 #include <fcntl.h>
 #include <math.h>
@@ -61,6 +62,7 @@ using rgb_matrix::StreamReader;
 
 typedef int64_t tmillis_t;
 static const tmillis_t distant_future = (1LL<<40); // that is a while.
+volatile uint32_t *timer_uS; // microsecond timer
 
 static volatile char* anim_state = NULL;
 static int serial_fd;
@@ -95,10 +97,13 @@ struct FileInfo {
 
 struct AnimState {
   char *name;
-  std::vector< rgb_matrix::StreamIO* > play_streams;
-  std::vector< rgb_matrix::StreamIO* > idle_streams;
+  std::vector< rgb_matrix::StreamIO* > streams;
+  int current = 0;
+  int max = 0;
   int loop_point = 0;
 };
+
+std::map<char*,AnimState> state_machine;
 
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
@@ -156,6 +161,79 @@ static void CopyStream(rgb_matrix::StreamReader *r,
   while (r->GetNext(scratch, &delay_us)) {
     w->Stream(*scratch, delay_us);
   }
+}
+
+static uint32_t sync_prev = 0;
+static uint32_t rotation_angle = 0;
+static int32_t rotation_delta = 256;
+static int sync_level = 1;
+static uint32_t tick_prev = 0;
+static uint32_t rotation_history[8];
+
+#define ROTATION_PRECISION 30
+#define ROTATION_FULL (1<<ROTATION_PRECISION)
+#define ROTATION_ZERO 286
+#define ROTATION_HISTORY 8
+
+static uint32_t rotation_zero = ROTATION_FULL / 360 * ROTATION_ZERO;
+static bool rotation_stopped = true;
+static uint32_t rotation_period_raw = 0;
+static uint32_t rotation_period = 1<<26;
+static bool rotation_lock = true;
+static int32_t rotation_drift = 0;
+
+int compare_ints(const void *a, const void *b) {
+  return *((int*)a) - *((int*)b);
+}
+
+static uint32_t median_period() {
+  static uint32_t sorted[ROTATION_HISTORY];
+  memcpy(sorted, rotation_history, sizeof(sorted));
+  qsort(sorted, ROTATION_HISTORY, sizeof(*sorted), compare_ints);
+
+  return (sorted[3] + sorted[4])/2;
+}
+
+static uint32_t rotation_current_angle(void) {
+  uint32_t tick_curr = rgb_matrix::GetMicrosecondCounter();
+  uint32_t elapsed = tick_curr - sync_prev;
+  
+  static uint32_t current = 0;
+
+  int sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
+  if (sync != sync_level) {
+    sync_level = sync;
+    
+    if(sync == 0) {
+      sync_prev = tick_curr;
+      rotation_period_raw = elapsed;
+      if (elapsed > 10000) {
+        if (++current >= ROTATION_HISTORY) {
+            current = 0;
+        }
+        rotation_history[current] = elapsed;
+        rotation_period = median_period();
+
+        rotation_delta = ROTATION_FULL / rotation_period;
+        // if (rotation_lock) {
+        //     int recentre = ((int32_t)((rotation_angle + (!sync * ROTATION_HALF)) & ROTATION_MASK) - ROTATION_HALF) >> 17;
+        //     recentre = clamp(recentre, -rotation_delta / 16, rotation_delta / 16);
+        //     rotation_delta -= recentre;
+        // }
+      }
+    }
+  }
+
+  uint32_t dtick = (tick_curr - tick_prev);
+  tick_prev = tick_curr;
+
+  uint32_t delta = dtick * rotation_delta;
+
+  rotation_angle = (rotation_angle + delta) & ROTATION_MASK;
+
+  rotation_zero = (rotation_zero + ROTATION_FULL + (dtick * rotation_drift)) & ROTATION_MASK;
+
+  return (rotation_angle + rotation_zero) & ROTATION_MASK;
 }
 
 // Load still image or animation.
@@ -216,6 +294,17 @@ static bool LoadImageAndScale(const char *filename,
   return true;
 }
 
+uint32_t d_us = 0;
+void DisplayAnimation2(char* state, int c) {
+  
+  rgb_matrix::StreamReader reader(state_machine[state].streams[c]); // get the image stream
+  while(!interrupt_received && reader.GetNext(offscreen_canvas, &d_us))
+  {
+    offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, 1);
+  }
+  reader.Rewind();
+}
+
 void DisplayAnimation(const FileInfo *file,
                       RGBMatrix *m, FrameCanvas *o_c) {
   const tmillis_t duration_ms = (file->is_multi_frame
@@ -267,7 +356,7 @@ void do_magick(char* filename, char* state, bool* idle) //, int slice)
   }
   if(file_info)
   {
-
+    
   }
 }
 
@@ -379,7 +468,6 @@ static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
         fwrite(file_contents, 1, file_size, f);
         fclose(f);
         printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
-        do_magick(fullpath, stateName, isIdle); // store in canvas
       } else {
         printf("Failed to open file for writing: %s\n", fullpath);
       }
@@ -460,6 +548,11 @@ static void *process_uart(void *arg)
         payload_len = (full_read[1] << 8) | full_read[2]; // big endian
         payhead = 2;
         printf("PAYLOAD : %u\n", payload_len);
+      }
+      else if (full_read[0] == 0x04) // 0-byte length
+      {
+        payhead = 0;
+        payload_len = 0;
       }
       else // 1-byte length
       {
@@ -800,7 +893,6 @@ int main(int argc, char *argv[]) {
   pthread_create(&uart_thread, NULL, process_uart, NULL);
 
   fprintf(stderr, "PTHREAD : %lu\n",uart_thread);
-
   
   // do the actual displaying
   do {
@@ -811,7 +903,8 @@ int main(int argc, char *argv[]) {
       do_reset = false;
     }
 
-    DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
+    // DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
+    DisplayAnimation2((char*)anim_state, i);
 
     sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
     if( sync_last != sync)
