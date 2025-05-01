@@ -57,8 +57,12 @@ using rgb_matrix::FrameCanvas;
 using rgb_matrix::RGBMatrix;
 using rgb_matrix::StreamReader;
 
-#define SPIN_SYNC 3 // gpio
+#define SPIN_SYNC 2 // gpio
 #define UART_BUF_SIZE 8192 // 1024 should be enough but not by much
+
+#define SLICE_COUNT 100
+#define SLICE_QUADRANT (SLICE_COUNT / 4)
+#define SLICE_WRAP(slice) ((slice) % (SLICE_COUNT))
 
 typedef int64_t tmillis_t;
 static const tmillis_t distant_future = (1LL<<40); // that is a while.
@@ -70,14 +74,14 @@ static uint8_t read_buf[UART_BUF_SIZE]; // rolling UART buffer
 static volatile size_t uart_buf_head = 0; // length of stored buffer
 static volatile bool read_busy = 0; // if process_uart is running
 
-static pthread_t uart_thread;
+static pthread_t uart_thread = 0;
 
 static RGBMatrix *matrix;
 static FrameCanvas *offscreen_canvas;
 
 namespace fs = std::filesystem;
 
-#define IMAGE_DIR "/hologram/utils/images/"
+// #define IMAGE_DIR "/hologram/utils/images/"
 
 struct ImageParams {
   ImageParams() : anim_duration_ms(distant_future), wait_ms(1500),
@@ -108,10 +112,10 @@ std::map<char*,AnimState> state_machine;
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
   interrupt_received = true;
-  if(uart_thread > 0)
-  {
-    pthread_cancel(uart_thread);
-  }
+  // if(uart_thread > 0)
+  // {
+  //   pthread_cancel(uart_thread);
+  // }
 }
 
 volatile bool do_reset = false;
@@ -174,6 +178,8 @@ static uint32_t rotation_history[8];
 #define ROTATION_FULL (1<<ROTATION_PRECISION)
 #define ROTATION_ZERO 286
 #define ROTATION_HISTORY 8
+#define ROTATION_HALF (1<<(ROTATION_PRECISION-1))
+#define ROTATION_MASK ((1<<ROTATION_PRECISION)-1)
 
 static uint32_t rotation_zero = ROTATION_FULL / 360 * ROTATION_ZERO;
 static bool rotation_stopped = true;
@@ -200,7 +206,7 @@ static uint32_t rotation_current_angle(void) {
   
   static uint32_t current = 0;
 
-  int sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
+  int sync = 1; //(matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
   if (sync != sync_level) {
     sync_level = sync;
     
@@ -295,9 +301,10 @@ static bool LoadImageAndScale(const char *filename,
 }
 
 uint32_t d_us = 0;
-void DisplayAnimation2(char* state, int c) {
+void DisplayAnimation2(const FileInfo *file, int c) {
   
-  rgb_matrix::StreamReader reader(state_machine[state].streams[c]); // get the image stream
+  // rgb_matrix::StreamReader reader(state_machine[state].streams[c]); // get the image stream
+  rgb_matrix::StreamReader reader(file->content_stream); 
   while(!interrupt_received && reader.GetNext(offscreen_canvas, &d_us))
   {
     offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, 1);
@@ -306,7 +313,7 @@ void DisplayAnimation2(char* state, int c) {
 }
 
 void DisplayAnimation(const FileInfo *file,
-                      RGBMatrix *m, FrameCanvas *o_c) {
+                      RGBMatrix *matrix, FrameCanvas *offscreen_canvas) {
   const tmillis_t duration_ms = (file->is_multi_frame
                                  ? file->params.anim_duration_ms
                                  : file->params.wait_ms);
@@ -321,11 +328,11 @@ void DisplayAnimation(const FileInfo *file,
        ++k) {
     uint32_t delay_us = 0;
     while (!interrupt_received && GetTimeInMillis() <= end_time_ms
-           && reader.GetNext(o_c, &delay_us)) {
+           && reader.GetNext(offscreen_canvas, &delay_us)) {
       const tmillis_t anim_delay_ms =
         override_anim_delay >= 0 ? override_anim_delay : delay_us / 1000;
       const tmillis_t start_wait_ms = GetTimeInMillis();
-      o_c = m->SwapOnVSync(o_c,
+      offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas,
                                              file->params.vsync_multiple);
       const tmillis_t time_already_spent = GetTimeInMillis() - start_wait_ms;
       SleepMillis(anim_delay_ms - time_already_spent);
@@ -335,286 +342,286 @@ void DisplayAnimation(const FileInfo *file,
 }
 
 // store file in canvas stream
-void do_magick(char* filename, char* state, bool* idle) //, int slice)
-{
-  ImageParams img_param;
-  FileInfo *file_info = NULL;
+// void do_magick(char* filename, char* state, bool* idle) //, int slice)
+// {
+//   ImageParams img_param;
+//   FileInfo *file_info = NULL;
 
-  std::string err_msg;
-  std::vector<Magick::Image> image_sequence;
-  if (LoadImageAndScale(filename, matrix->width(), matrix->height(),
-                        false, false, &image_sequence, &err_msg)) {
-    file_info = new FileInfo();
-    file_info->params = img_param;
-    file_info->content_stream = new rgb_matrix::MemStreamIO();
-    file_info->is_multi_frame = image_sequence.size() > 1;
-    rgb_matrix::StreamWriter out(file_info->content_stream);
-    for (size_t i = 0; i < image_sequence.size(); ++i) {
-      const Magick::Image &img = image_sequence[i];
-      StoreInStream(img, 0, false, offscreen_canvas, &out);
-    }
-  }
-  if(file_info)
-  {
+//   std::string err_msg;
+//   std::vector<Magick::Image> image_sequence;
+//   if (LoadImageAndScale(filename, matrix->width(), matrix->height(),
+//                         false, false, &image_sequence, &err_msg)) {
+//     file_info = new FileInfo();
+//     file_info->params = img_param;
+//     file_info->content_stream = new rgb_matrix::MemStreamIO();
+//     file_info->is_multi_frame = image_sequence.size() > 1;
+//     rgb_matrix::StreamWriter out(file_info->content_stream);
+//     for (size_t i = 0; i < image_sequence.size(); ++i) {
+//       const Magick::Image &img = image_sequence[i];
+//       StoreInStream(img, 0, false, offscreen_canvas, &out);
+//     }
+//   }
+//   if(file_info)
+//   {
     
-  }
-}
+//   }
+// }
 
-static int beginUART() {
-  serial_fd = open("/dev/ttyS0", O_RDWR);
-  struct termios tty;
-  if(tcgetattr(serial_fd, &tty) != 0) {
-      printf("Error %i from tcgetattr: %s\n", errno, strerror(errno));
-      return -1;
-  }
-  tty.c_cflag &= ~PARENB;
-  tty.c_cflag &= ~CSTOPB;
-  tty.c_cflag &= ~CSIZE;
-  tty.c_cflag |= CS8;
-  tty.c_cflag &= ~CRTSCTS;
-  tty.c_cflag |= CREAD | CLOCAL;
-  tty.c_lflag &= ~ICANON;
-  tty.c_lflag &= ~ECHO;
-  tty.c_lflag &= ~ECHOE;
-  tty.c_lflag &= ~ECHONL;
-  tty.c_lflag &= ~ISIG;
-  tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-  tty.c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL);
-  tty.c_oflag &= ~OPOST;
-  tty.c_oflag &= ~ONLCR;
-  tty.c_cc[VTIME] = 0;
-  tty.c_cc[VMIN] = 0;
-  cfsetispeed(&tty, B2000000);
-  cfsetospeed(&tty, B2000000);
-  if (tcsetattr(serial_fd, TCSANOW, &tty) != 0) {
-      printf("Error %i from tcsetattr: %s\n", errno, strerror(errno));
-      return -1;
-  }
-  return serial_fd;
-}
+// static int beginUART() {
+//   serial_fd = open("/dev/ttyS0", O_RDWR);
+//   struct termios tty;
+//   if(tcgetattr(serial_fd, &tty) != 0) {
+//       printf("Error %i from tcgetattr: %s\n", errno, strerror(errno));
+//       return -1;
+//   }
+//   tty.c_cflag &= ~PARENB;
+//   tty.c_cflag &= ~CSTOPB;
+//   tty.c_cflag &= ~CSIZE;
+//   tty.c_cflag |= CS8;
+//   tty.c_cflag &= ~CRTSCTS;
+//   tty.c_cflag |= CREAD | CLOCAL;
+//   tty.c_lflag &= ~ICANON;
+//   tty.c_lflag &= ~ECHO;
+//   tty.c_lflag &= ~ECHOE;
+//   tty.c_lflag &= ~ECHONL;
+//   tty.c_lflag &= ~ISIG;
+//   tty.c_iflag &= ~(IXON | IXOFF | IXANY);
+//   tty.c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL);
+//   tty.c_oflag &= ~OPOST;
+//   tty.c_oflag &= ~ONLCR;
+//   tty.c_cc[VTIME] = 0;
+//   tty.c_cc[VMIN] = 0;
+//   cfsetispeed(&tty, B2000000);
+//   cfsetospeed(&tty, B2000000);
+//   if (tcsetattr(serial_fd, TCSANOW, &tty) != 0) {
+//       printf("Error %i from tcsetattr: %s\n", errno, strerror(errno));
+//       return -1;
+//   }
+//   return serial_fd;
+// }
 
-const char IDLE_SUFFIX[] = "_Idle";
+// const char IDLE_SUFFIX[] = "_Idle";
 
-static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
-  printf("PROCESS_UART_COMMAND : %d / %lu\n",cmd,len);
-  if( cmd == 0x01 )
-  {
-    // receive an image
-    printf("Received image with length %zu\n", len);
+// static void process_uart_command(uint8_t cmd, uint8_t* payload, size_t len) {
+//   printf("PROCESS_UART_COMMAND : %d / %lu\n",cmd,len);
+//   if( cmd == 0x01 )
+//   {
+//     // receive an image
+//     printf("Received image with length %zu\n", len);
 
-    // payload[0],[1] = payload size
-    // Process the image data in payload
-    uint16_t name_size = payload[2]; // big endian
-    char filename[256]; // max POSIX filename length
-    if (name_size >= sizeof(filename)) {
-      // Filename too big for buffer
-      return;
-    }
-    // Extract filename
-    memcpy(filename, payload + 3, name_size);
-    filename[name_size] = '\0'; // terminate the filename with a null character
+//     // payload[0],[1] = payload size
+//     // Process the image data in payload
+//     uint16_t name_size = payload[2]; // big endian
+//     char filename[256]; // max POSIX filename length
+//     if (name_size >= sizeof(filename)) {
+//       // Filename too big for buffer
+//       return;
+//     }
+//     // Extract filename
+//     memcpy(filename, payload + 3, name_size);
+//     filename[name_size] = '\0'; // terminate the filename with a null character
 
-    printf("%s\n",filename);
+//     printf("%s\n",filename);
 
-    // return;
+//     // return;
 
-    //////////////// ALL THIS JUST TO NAME THE DAMN FILE ////////////////
-    // Find first numeric character in filename
-    size_t base_len = 0;
-    while (base_len < name_size && !(filename[base_len] >= '0' && filename[base_len] <= '9')) {
-      base_len++;
-    }
-    if (base_len == 0) {
-      // original filename is invalid as it contains numbers at the beginning
-      // it actually isn't allowed to contain numbers at all EXCEPT the index at the end
-      return;
-    }
-    char folder[512];
-    char stateName[512];
-    bool isIdle;
-    snprintf(folder, sizeof(folder), "%s%.*s", IMAGE_DIR, (int)base_len, filename);
+//     //////////////// ALL THIS JUST TO NAME THE DAMN FILE ////////////////
+//     // Find first numeric character in filename
+//     size_t base_len = 0;
+//     while (base_len < name_size && !(filename[base_len] >= '0' && filename[base_len] <= '9')) {
+//       base_len++;
+//     }
+//     if (base_len == 0) {
+//       // original filename is invalid as it contains numbers at the beginning
+//       // it actually isn't allowed to contain numbers at all EXCEPT the index at the end
+//       return;
+//     }
+//     char folder[512];
+//     char stateName[512];
+//     bool isIdle;
+//     snprintf(folder, sizeof(folder), "%s%.*s", IMAGE_DIR, (int)base_len, filename);
 
-    // get state name & check if _Idle
-    if( base_len > 6 && strcmp(folder + base_len - 5, IDLE_SUFFIX) == 0 )
-    {
-      memcpy(stateName, folder, base_len - 5);
-      // do something
-      isIdle = true;
-    }
-    else
-    {
-      memcpy(stateName, folder, base_len);
-      isIdle = false;
-    }
+//     // get state name & check if _Idle
+//     if( base_len > 6 && strcmp(folder + base_len - 5, IDLE_SUFFIX) == 0 )
+//     {
+//       memcpy(stateName, folder, base_len - 5);
+//       // do something
+//       isIdle = true;
+//     }
+//     else
+//     {
+//       memcpy(stateName, folder, base_len);
+//       isIdle = false;
+//     }
 
-    // Make directory if it doesn't exist
-    if (mkdir(folder, 0777) && errno != EEXIST) {
-      printf("Failed to create folder: %s\nError: %s\n", folder, strerror(errno));
-      return;
-    }
+//     // Make directory if it doesn't exist
+//     if (mkdir(folder, 0777) && errno != EEXIST) {
+//       printf("Failed to create folder: %s\nError: %s\n", folder, strerror(errno));
+//       return;
+//     }
 
-    // Create full path to save file
-    char fullpath[512];
-    snprintf(fullpath, sizeof(fullpath), "%s/%s", folder, filename);
+//     // Create full path to save file
+//     char fullpath[512];
+//     snprintf(fullpath, sizeof(fullpath), "%s/%s", folder, filename);
 
-    // Extract file contents
-    size_t file_size = len - name_size - 3;
-    uint8_t* file_contents = payload + 3 + name_size;
+//     // Extract file contents
+//     size_t file_size = len - name_size - 3;
+//     uint8_t* file_contents = payload + 3 + name_size;
 
-    // if ( !fs::exists(fullpath) )
-    // {
-      FILE* f = fopen(fullpath, "wb");
-      if (f) {
-        fwrite(file_contents, 1, file_size, f);
-        fclose(f);
-        printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
-      } else {
-        printf("Failed to open file for writing: %s\n", fullpath);
-      }
-    // }
-  }
-  else if (cmd == 0x02)
-  {
-    // change animation state
-    // 0x02 -> length [0] -> string -> \0
+//     // if ( !fs::exists(fullpath) )
+//     // {
+//       FILE* f = fopen(fullpath, "wb");
+//       if (f) {
+//         // fwrite(file_contents, 1, file_size, f);
+//         fclose(f);
+//         printf("Saved file: %s (%zu bytes)\n", fullpath, file_size);
+//       } else {
+//         printf("Failed to open file for writing: %s\n", fullpath);
+//       }
+//     // }
+//   }
+//   else if (cmd == 0x02)
+//   {
+//     // change animation state
+//     // 0x02 -> length [0] -> string -> \0
 
-    uint8_t payload_len = payload[0];
-    char nextState[payload_len+1];
-    memcpy(nextState, payload+1, payload_len);
+//     uint8_t payload_len = payload[0];
+//     char nextState[payload_len+1];
+//     memcpy(nextState, payload+1, payload_len);
 
-    nextState[payload_len] = '\0';
-    printf("anim_state : %s\n",nextState);
-  }
-  else if (cmd == 0x03)
-  {
-    // receive a swipe input
-    uint8_t payload_len = payload[0];
-    char dir[payload_len+1]; // max length of direction string
-    if (payload_len >= sizeof(dir)) {
-      // Filename too big for buffer (should be impossible)
-      return;
-    }
+//     nextState[payload_len] = '\0';
+//     printf("anim_state : %s\n",nextState);
+//   }
+//   else if (cmd == 0x03)
+//   {
+//     // receive a swipe input
+//     uint8_t payload_len = payload[0];
+//     char dir[payload_len+1]; // max length of direction string
+//     if (payload_len >= sizeof(dir)) {
+//       // Filename too big for buffer (should be impossible)
+//       return;
+//     }
 
-    memcpy(dir, payload + 1, payload_len);
-    dir[payload_len] = '\0'; // Terminate the string with a null character
-    printf("Receiving swipe: %s\n", dir);
+//     memcpy(dir, payload + 1, payload_len);
+//     dir[payload_len] = '\0'; // Terminate the string with a null character
+//     printf("Receiving swipe: %s\n", dir);
 
-    for (uint8_t i = 0; i < payload_len; ++i) {
-      char letter = dir[i];
-      // @Johnathan back to you, i don't really know what you want to do with the swipe inputs.
-      printf("Letter %d: %c\n", i, letter);
-    }
-  }
-  fflush(stdout);
-}
+//     for (uint8_t i = 0; i < payload_len; ++i) {
+//       char letter = dir[i];
+//       // @Johnathan back to you, i don't really know what you want to do with the swipe inputs.
+//       printf("Letter %d: %c\n", i, letter);
+//     }
+//   }
+//   fflush(stdout);
+// }
 
 // poll UART and process if RX
-static void *process_uart(void *arg)
-{
-  int bytes;
-  while(!interrupt_received)
-  {
-    // todo: if time > timeout, reset uart_buf_head
-    ioctl(serial_fd, FIONREAD, &bytes);
-    if(bytes <= 0 )
-    {
-      continue;
-    }
+// static void *process_uart(void *arg)
+// {
+//   int bytes;
+//   while(!interrupt_received)
+//   {
+//     // todo: if time > timeout, reset uart_buf_head
+//     ioctl(serial_fd, FIONREAD, &bytes);
+//     if(bytes <= 0 )
+//     {
+//       continue;
+//     }
 
-    printf("BYTES RECEIVED : %d\n",bytes);
+//     printf("BYTES RECEIVED : %d\n",bytes);
     
-    int r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head); // read up to end of available buffer
-    uart_buf_head += r;
+//     int r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head); // read up to end of available buffer
+//     uart_buf_head += r;
 
-    std::vector<uint8_t> full_read; // full command read only
+//     std::vector<uint8_t> full_read; // full command read only
 
-    // get full command
-    if( uart_buf_head > 0 )
-    {
-      full_read.push_back(read_buf[0]);
+//     // get full command
+//     if( uart_buf_head > 0 )
+//     {
+//       full_read.push_back(read_buf[0]);
 
-      uint16_t payload_len;
-      int payhead = 0; // 
+//       uint16_t payload_len;
+//       int payhead = 0; // 
 
-      if( full_read[0] == 0x01 ) // has 2-byte length
-      {
-        // read up until command + payload length
-        while( uart_buf_head < 3 )
-        {
-          r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
-          uart_buf_head += r;
-        }
-        full_read.push_back(read_buf[1]);full_read.push_back(read_buf[2]);
-        payload_len = (full_read[1] << 8) | full_read[2]; // big endian
-        payhead = 2;
-        printf("PAYLOAD : %u\n", payload_len);
-      }
-      else if (full_read[0] == 0x04) // 0-byte length
-      {
-        payhead = 0;
-        payload_len = 0;
-      }
-      else // 1-byte length
-      {
-        while( uart_buf_head < 2 )
-        {
-          r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
-          uart_buf_head += r;
-        }
-        full_read.push_back(read_buf[1]);
-        payload_len = full_read[1];
-        payhead = 1;
-        printf("PAYLOAD : %u\n", payload_len);
-      }
+//       if( full_read[0] == 0x01 ) // has 2-byte length
+//       {
+//         // read up until command + payload length
+//         while( uart_buf_head < 3 )
+//         {
+//           r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
+//           uart_buf_head += r;
+//         }
+//         full_read.push_back(read_buf[1]);full_read.push_back(read_buf[2]);
+//         payload_len = (full_read[1] << 8) | full_read[2]; // big endian
+//         payhead = 2;
+//         printf("PAYLOAD : %u\n", payload_len);
+//       }
+//       else if (full_read[0] == 0x04) // 0-byte length
+//       {
+//         payhead = 0;
+//         payload_len = 0;
+//       }
+//       else // 1-byte length
+//       {
+//         while( uart_buf_head < 2 )
+//         {
+//           r = read(serial_fd, read_buf + uart_buf_head, UART_BUF_SIZE - uart_buf_head);
+//           uart_buf_head += r;
+//         }
+//         full_read.push_back(read_buf[1]);
+//         payload_len = full_read[1];
+//         payhead = 1;
+//         printf("PAYLOAD : %u\n", payload_len);
+//       }
 
-      int len = 0;
-      // clear buffer head
-      while( uart_buf_head > len + payhead + 1 && len < payload_len )
-      {
-        // printf("run %c %d %lu\n",read_buf[len+payhead+1], len, uart_buf_head);
-        full_read.push_back(read_buf[len+payhead+1]);
-        len++;
-      }
-      // move read buffer back if excess from last read
-      if( len == payload_len )
-      {
-        uart_buf_head = uart_buf_head - (payload_len+payhead+1);
-        memmove( read_buf, read_buf + (payload_len+payhead+1) , uart_buf_head );
-      }
-      while(len < payload_len)
-      {
-        r = read(serial_fd, read_buf, UART_BUF_SIZE);
-        uart_buf_head += r;
-        int c = 0;
-        while(r > c && len < payload_len)
-        {
-          // printf("cont %c %lu\n",read_buf[c], uart_buf_head);
-          full_read.push_back(read_buf[c++]);
-          len++;
-        }
-        if( len == payload_len && r > c)
-        {
-          // printf("excess %d ",c);
-          // for( int k = 0; k < r-c ; k++)
-          // {
-          //   printf("%c", read_buf[c+k]);
-          // }
-          uart_buf_head = r-c; // excess from last read
-          memmove( read_buf, read_buf + c , uart_buf_head );
-        }
-        else
-        {
-          uart_buf_head = 0;
-        }
-      }
-      fflush(stdout);
+//       int len = 0;
+//       // clear buffer head
+//       while( uart_buf_head > len + payhead + 1 && len < payload_len )
+//       {
+//         // printf("run %c %d %lu\n",read_buf[len+payhead+1], len, uart_buf_head);
+//         full_read.push_back(read_buf[len+payhead+1]);
+//         len++;
+//       }
+//       // move read buffer back if excess from last read
+//       if( len == payload_len )
+//       {
+//         uart_buf_head = uart_buf_head - (payload_len+payhead+1);
+//         memmove( read_buf, read_buf + (payload_len+payhead+1) , uart_buf_head );
+//       }
+//       while(len < payload_len)
+//       {
+//         r = read(serial_fd, read_buf, UART_BUF_SIZE);
+//         uart_buf_head += r;
+//         int c = 0;
+//         while(r > c && len < payload_len)
+//         {
+//           // printf("cont %c %lu\n",read_buf[c], uart_buf_head);
+//           full_read.push_back(read_buf[c++]);
+//           len++;
+//         }
+//         if( len == payload_len && r > c)
+//         {
+//           // printf("excess %d ",c);
+//           // for( int k = 0; k < r-c ; k++)
+//           // {
+//           //   printf("%c", read_buf[c+k]);
+//           // }
+//           uart_buf_head = r-c; // excess from last read
+//           memmove( read_buf, read_buf + c , uart_buf_head );
+//         }
+//         else
+//         {
+//           uart_buf_head = 0;
+//         }
+//       }
+//       fflush(stdout);
 
 
-      process_uart_command(full_read[0], full_read.data() + 1, payhead+payload_len);
-    }
-  }
-  pthread_exit(NULL);
-}
+//       process_uart_command(full_read[0], full_read.data() + 1, payhead+payload_len);
+//     }
+//   }
+//   pthread_exit(NULL);
+// }
 
 static int usage(const char *progname) {
   fprintf(stderr, "usage: %s [options] <image> [option] [<image> ...]\n",
@@ -667,12 +674,16 @@ int main(int argc, char *argv[]) {
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
 
+  // TODO: init message passing
+
+  
+
   // while( (serial_fd = open("/dev/ttyS0", O_RDONLY) ) < 0 )
-  while( beginUART() < 0 )
-  {
-    fprintf( stderr, "UNABLE TO OPEN SERIAL");
-    sleep(3);
-  }
+  // while( beginUART() < 0 )
+  // {
+  //   fprintf( stderr, "UNABLE TO OPEN SERIAL");
+  //   sleep(3);
+  // }
 
   // if( wiringPiSetup() == -1 )
   // {
@@ -707,7 +718,6 @@ int main(int argc, char *argv[]) {
 
   // Set defaults.
   ImageParams img_param;
-  
   for (int i = 0; i < argc; ++i) {
     filename_params[argv[i]] = img_param;
   }
@@ -777,6 +787,8 @@ int main(int argc, char *argv[]) {
 
     // Starting from the current file, set all the remaining files to
     // the latest change.
+
+    // TODO: split file lists based on folder
     for (int i = optind; i < argc; ++i) {
       if ( strcmp(argv[i],"idle") == 0 )
       {
@@ -789,6 +801,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // TODO: no file args required
   const int filename_count = argc - optind;
   if (filename_count == 0) {
     fprintf(stderr, "Expected image filename.\n");
@@ -813,17 +826,7 @@ int main(int argc, char *argv[]) {
   const bool fill_height = false;
 
   // In case the output to stream is requested, set up the stream object.
-  rgb_matrix::StreamIO *stream_io = NULL;
   rgb_matrix::StreamWriter *global_stream_writer = NULL;
-  // if (stream_output) {
-  //   int fd = open(stream_output, O_CREAT|O_WRONLY, 0644);
-  //   if (fd < 0) {
-  //     perror("Couldn't open output stream");
-  //     return 1;
-  //   }
-  //   stream_io = new rgb_matrix::FileStreamIO(fd);
-  //   global_stream_writer = new rgb_matrix::StreamWriter(stream_io);
-  // }
 
   const tmillis_t start_load = GetTimeInMillis();
   fprintf(stderr, "Loading %d files...\n", argc - optind);
@@ -845,10 +848,11 @@ int main(int argc, char *argv[]) {
       rgb_matrix::StreamWriter out(file_info->content_stream);
       for (size_t i = 0; i < image_sequence.size(); ++i) {
         const Magick::Image &img = image_sequence[i];
-        StoreInStream(img, 0, do_center, offscreen_canvas, &out);
+        StoreInStream(img, (int64_t)0, do_center, offscreen_canvas, &out);
       }         
     }
     if (file_info) {
+      // TODO: split based on state
       file_imgs.push_back(file_info);
     } else {
       fprintf(stderr, "%s skipped: Unable to open (%s)\n",
@@ -857,7 +861,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Some parameter sanity adjustments.
-  if (file_imgs.empty()) {
+  if (file_imgs.empty()) { // TODO: have default.png to avoid segfault
     // e.g. if all files could not be interpreted as image.
     fprintf(stderr, "No image could be loaded.\n");
     return 1;
@@ -885,46 +889,49 @@ int main(int argc, char *argv[]) {
 
   /******** DISPLAY LOOP **********/
 
-  bool sync, sync_last = 0, sync_loop = 0;
+  bool sync, sync_last = 0, sync_idling = 0;
   int sync_frame = 0;
   // char read_buf [UART_BUF_SIZE];
   // size_t uart_buf_head = 0; // how many valid bytes currently in uart_buf
 
-  pthread_create(&uart_thread, NULL, process_uart, NULL);
-
-  fprintf(stderr, "PTHREAD : %lu\n",uart_thread);
+  // pthread_create(&uart_thread, NULL, process_uart, NULL);
+  // fprintf(stderr, "PTHREAD : %lu\n",uart_thread);
   
   // do the actual displaying
+  size_t i = 0;
   do {
-    size_t i = 0;
     if(do_reset == true){
       sync_frame = 0;
       i = 0;
       do_reset = false;
     }
 
-    // DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
-    DisplayAnimation2((char*)anim_state, i);
+    // uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
+
+    DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
+    // DisplayAnimation2((char*)anim_state, i);
 
     sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
     if( sync_last != sync)
     {
       sync_last = sync;
       // only loop on idle
-      if (sync == 0 && sync_loop == 1 )
+      if (sync == 0 && sync_idling == 1 )
       {
         i = sync_frame;
       }
+      // if(sync == 0)
+      //   i++;
     }
-    if( ++i > file_imgs.size()-1 )
+    if( i > file_imgs.size()-1 )
     {
-      sync_loop = 1;
+      sync_idling = 1;
       sync_frame = idle_start;
       i = idle_start;
     }
   } while (do_forever && !interrupt_received);
 
-  pthread_join(uart_thread, nullptr);
+  // pthread_join(uart_thread, nullptr);
 
   if (interrupt_received) {
     fprintf(stderr, "Caught signal. Exiting.\n");
