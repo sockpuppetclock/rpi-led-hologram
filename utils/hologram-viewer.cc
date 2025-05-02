@@ -700,6 +700,7 @@ std::map<const void *, struct ImageParams> GetFileList()
 {
   std::map<const void *, struct ImageParams> new_list;
   ImageParams im = ImageParams();
+
   for( const auto & entry : fs::directory_iterator(IMAGE_PATH) )
   {
     if(entry.is_directory())
@@ -725,6 +726,53 @@ std::map<const void *, struct ImageParams> GetFileList()
     }
   }
   
+  return new_list;
+}
+
+std::map< std::string, std::vector<std::string> > GetFileList2()
+{
+  std::map< std::string, std::vector<std::string> > new_list;
+
+  ImageParams im = ImageParams();
+
+  int i = 0;
+  for( const auto & entry : fs::directory_iterator(IMAGE_PATH) )
+  {
+    if(entry.is_directory())
+    {
+      std::string dir = entry.path().string();
+      // grab list, sort list
+      std::vector<std::string> f_list;
+      int fc = 0;
+      for( const auto & entry2 : fs::directory_iterator(entry.path()) )
+      {
+        if(entry2.is_regular_file())
+        {
+          fc++;
+          std::string file_str = entry2.path().string();
+          bool found = 0;
+          for( const auto& itr : f_list )
+          {
+            if( file_str == itr )
+            {
+              found = 1;
+              break;
+            }
+          }
+          if(!found){
+            f_list.push_back(file_str);
+          }
+        }
+        std::sort(f_list.begin(), f_list.end());
+      }
+      std::cout << ++i << " " << fc << std::endl;
+      for (const auto& itr : f_list)
+      {
+          std::cout << itr << std::endl;
+      }
+    }
+  }
+
   return new_list;
 }
 
@@ -755,7 +803,8 @@ int main(int argc, char *argv[]) {
   std::cout << "Received World" << std::endl;
 
   std::cout << "Getting file list..." << std::endl;
-  std::map<const void *, struct ImageParams> filename_params = GetFileList();
+  // std::map<const void *, struct ImageParams> filename_params = GetFileList();
+  std::map< std::string, std::vector<std::string> > file_list = GetFileList2();
 
   // while( (serial_fd = open("/dev/ttyS0", O_RDONLY) ) < 0 )
   // while( beginUART() < 0 )
@@ -869,7 +918,11 @@ int main(int argc, char *argv[]) {
   }
 
   // TODO: no file args required
-  int filename_count = filename_params.size();
+  int filename_count = 0;
+  for(auto const &iter : file_list)
+  {
+    filename_count += iter.second.size();
+  }
   if (filename_count == 0) {
     fprintf(stderr, "No images found\n");
     return usage(argv[0]);
@@ -901,32 +954,36 @@ int main(int argc, char *argv[]) {
   // be quickly switching between these. So preprocess.
   std::vector<FileInfo*> file_imgs;
   // for (int imgarg = 0; imgarg < argc; ++imgarg) {
-  for( auto it = filename_params.begin(); it != filename_params.end(); ++it)
+  
+  for(auto const &iter : file_list)
+  {
+  for( auto it = iter.second.begin(); it != iter.second.end(); ++it)
     {
-    const void* filename = it->first;
-    std::cout << "Loaded :" << (const char*)(filename) << std::endl;
-    FileInfo *file_info = NULL;
+      const void* filename = it;
+      // std::cout << "Loaded :" << (const char*)(filename) << std::endl;
+      FileInfo *file_info = NULL;
 
-    std::string err_msg;
-    std::vector<Magick::Image> image_sequence;
-    if (LoadImageAndScale((const char*)filename, matrix->width(), matrix->height(),
-                          fill_width, fill_height, &image_sequence, &err_msg)) {
-      file_info = new FileInfo();
-      file_info->params = filename_params[filename];
-      file_info->content_stream = new rgb_matrix::MemStreamIO();
-      file_info->is_multi_frame = image_sequence.size() > 1;
-      rgb_matrix::StreamWriter out(file_info->content_stream);
-      for (size_t i = 0; i < image_sequence.size(); ++i) {
-        const Magick::Image &img = image_sequence[i];
-        StoreInStream(img, (int64_t)0, do_center, offscreen_canvas, &out);
+      std::string err_msg;
+      std::vector<Magick::Image> image_sequence;
+      if (LoadImageAndScale((const char*)filename, matrix->width(), matrix->height(),
+                            fill_width, fill_height, &image_sequence, &err_msg)) {
+        file_info = new FileInfo();
+        file_info->params = filename_params[filename];
+        file_info->content_stream = new rgb_matrix::MemStreamIO();
+        file_info->is_multi_frame = image_sequence.size() > 1;
+        rgb_matrix::StreamWriter out(file_info->content_stream);
+        for (size_t i = 0; i < image_sequence.size(); ++i) {
+          const Magick::Image &img = image_sequence[i];
+          StoreInStream(img, (int64_t)0, do_center, offscreen_canvas, &out);
+        }
       }
-    }
-    if (file_info) {
-      // TODO: split based on state
-      file_imgs.push_back(file_info);
-    } else {
-      fprintf(stderr, "%s skipped: Unable to open (%s)\n",
-              filename, err_msg.c_str());
+      if (file_info) {
+        // TODO: split based on state
+        file_imgs.push_back(file_info);
+      } else {
+        fprintf(stderr, "%s skipped: Unable to open (%s)\n",
+                filename, err_msg.c_str());
+      }
     }
   }
 
