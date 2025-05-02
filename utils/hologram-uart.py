@@ -79,6 +79,13 @@ def main():
     try:
         # main loop #
         while True:
+            message = socket.recv()
+            print(f"Received request : {message}")
+            if(message == "\x01"):
+                socket.send_string("World")
+            else:
+                socket.send_string("0")
+            print("Sent")
             if ser.in_waiting:
                 control_byte = ser.read(1)
                 print("control:"+control_byte)
@@ -100,8 +107,6 @@ def main():
                 elif control_byte == b'\x04':
                     ReceiveGesture()
     except KeyboardInterrupt:
-        CloseSerial()
-    except:
         CloseSerial()
 
 main()

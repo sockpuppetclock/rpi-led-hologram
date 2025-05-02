@@ -1,6 +1,6 @@
 CXXFLAGS=-O3 -W -Wall -Wextra -Wno-unused-parameter -D_FILE_OFFSET_BITS=64
-OBJECTS=led-image-viewer.o text-scroller.o hologram-viewer.o
-BINARIES=led-image-viewer text-scroller hologram-viewer
+OBJECTS=led-image-viewer.o text-scroller.o hologram-viewer.o zmq-test.o
+BINARIES=led-image-viewer text-scroller hologram-viewer zmq-test
 
 OPTIONAL_OBJECTS=video-viewer.o
 OPTIONAL_BINARIES=video-viewer
@@ -13,6 +13,7 @@ RGB_LIBDIR=$(RGB_LIB_DISTRIBUTION)/lib
 RGB_LIBRARY_NAME=rgbmatrix
 RGB_LIBRARY=$(RGB_LIBDIR)/lib$(RGB_LIBRARY_NAME).a
 RGB_LDFLAGS+=-L$(RGB_LIBDIR) -l$(RGB_LIBRARY_NAME) -lrt -lm -lpthread
+HOLO_LDFLAGS=-L/usr/local/lib -lzmq
 
 # Imagemagic flags, only needed if actually compiled.
 MAGICK_CXXFLAGS?=$(shell GraphicsMagick++-config --cppflags --cxxflags)
@@ -31,7 +32,10 @@ text-scroller: text-scroller.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) text-scroller.o -o $@ $(LDFLAGS) $(RGB_LDFLAGS)
 
 hologram-viewer: hologram-viewer.o $(RGB_LIBRARY)
-	$(CXX) $(CXXFLAGS) hologram-viewer.o -o $@ $(LDFLAGS) $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
+	$(CXX) $(CXXFLAGS) hologram-viewer.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
+
+zmq-test: zmq-test.o $(RGB_LIBRARY)
+	$(CXX) $(CXXFLAGS) zmq-test.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
 
 led-image-viewer: led-image-viewer.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) led-image-viewer.o -o $@ $(LDFLAGS) $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)

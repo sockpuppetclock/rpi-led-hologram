@@ -19,6 +19,8 @@
 // Then compile with
 // $ make hologram-viewer
 
+#include <zmq.hpp>
+
 #include "led-matrix.h"
 #include "pixel-mapper.h"
 #include "content-streamer.h"
@@ -35,6 +37,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <iostream>
 #include <filesystem>
 
 #include <algorithm>
@@ -74,7 +77,7 @@ static uint8_t read_buf[UART_BUF_SIZE]; // rolling UART buffer
 static volatile size_t uart_buf_head = 0; // length of stored buffer
 static volatile bool read_busy = 0; // if process_uart is running
 
-static pthread_t uart_thread = 0;
+static pthread_t zmq_thread = 0;
 
 static RGBMatrix *matrix;
 static FrameCanvas *offscreen_canvas;
@@ -89,6 +92,7 @@ struct ImageParams {
   tmillis_t anim_duration_ms;  // If this is an animation, duration to show.
   tmillis_t wait_ms;           // Regular image: duration to show.
   tmillis_t anim_delay_ms;     // Animation delay override.
+  const void *state = nullptr;
   int loops;
   int vsync_multiple;
 };
@@ -101,21 +105,21 @@ struct FileInfo {
 
 struct AnimState {
   char *name;
-  std::vector< rgb_matrix::StreamIO* > streams;
+  rgb_matrix::StreamIO** streams; // list of pointers
   int current = 0;
   int max = 0;
   int loop_point = 0;
 };
 
-std::map<char*,AnimState> state_machine;
+std::map<char *,AnimState> state_machine; // state name, anim state
 
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
   interrupt_received = true;
-  // if(uart_thread > 0)
-  // {
-  //   pthread_cancel(uart_thread);
-  // }
+  if(zmq_thread > 0)
+  {
+    pthread_cancel(zmq_thread);
+  }
 }
 
 volatile bool do_reset = false;
@@ -367,6 +371,29 @@ void DisplayAnimation(const FileInfo *file,
 //   }
 // }
 
+const std::string endpoint = "tcp://localhost:5555";
+
+void* zmq_loop (void* s)
+{
+  zmq::socket_t* socket = (zmq::socket_t*)s;
+  while(!interrupt_received)
+  {
+    zmq::message_t request (1);
+    memcpy (request.data (), "\x00", 1);
+    // std::cout << "request" << std::endl;
+    socket->send (request, zmq::send_flags::none);
+
+    //  Get the reply.
+    zmq::message_t update;
+    socket->recv (update, zmq::recv_flags::none);
+    char* cmd = (char*)(update.data());
+    // std::cout << "update : " << cmd[0] << std::endl;
+
+    // TODO: DO STUFF ON DIFFERENT CMDS
+  }
+  return nullptr;
+}
+
 // static int beginUART() {
 //   serial_fd = open("/dev/ttyS0", O_RDWR);
 //   struct termios tty;
@@ -521,7 +548,6 @@ void DisplayAnimation(const FileInfo *file,
 //   int bytes;
 //   while(!interrupt_received)
 //   {
-//     // todo: if time > timeout, reset uart_buf_head
 //     ioctl(serial_fd, FIONREAD, &bytes);
 //     if(bytes <= 0 )
 //     {
@@ -668,15 +694,68 @@ static int usage(const char *progname) {
   return 1;
 }
 
+std::string IMAGE_PATH = "/hologram/utils/images/";
+
+std::map<const void *, struct ImageParams> GetFileList()
+{
+  std::map<const void *, struct ImageParams> new_list;
+  ImageParams im = ImageParams();
+  for( const auto & entry : fs::directory_iterator(IMAGE_PATH) )
+  {
+    if(entry.is_directory())
+    {
+      std::string dir_str = entry.path().string();
+      char *dir = new char[dir_str.size()+1];
+      strcpy(dir, dir_str.c_str());
+      // std::cout << "Dir :" << dir << std::endl;
+
+      for( const auto & entry2 : fs::directory_iterator(entry.path()) )
+      {
+        if(entry2.is_regular_file())
+        {
+          std::string file_str = entry2.path().string();
+          char *file = new char[file_str.size()+1];
+          strcpy(file, file_str.c_str());
+          
+          // std::cout << "File :" << file << std::endl;
+          new_list[file] = im;
+          new_list[file].state = dir;
+        }
+      }
+    }
+  }
+  
+  return new_list;
+}
+
 int main(int argc, char *argv[]) {
   Magick::InitializeMagick(*argv);
 
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
 
-  // TODO: init message passing
+  /* initialize message passing (zeromq) */
 
-  
+  std::cout << "Starting ZMQ..." << std::endl;
+
+  //  Prepare our context and socket
+  zmq::context_t context (1);
+  zmq::socket_t socket (context, zmq::socket_type::req);
+
+  std::cout << "Connecting to hello world server..." << std::endl;
+  socket.connect ("tcp://localhost:5555");
+
+  zmq::message_t request (1);
+  memcpy (request.data (), "\x01", 5);
+  std::cout << "Sending Hello" << std::endl;
+  socket.send(request, zmq::send_flags::none);
+
+  zmq::message_t reply;
+  socket.recv(reply, zmq::recv_flags::none);
+  std::cout << "Received World" << std::endl;
+
+  std::cout << "Getting file list..." << std::endl;
+  std::map<const void *, struct ImageParams> filename_params = GetFileList();
 
   // while( (serial_fd = open("/dev/ttyS0", O_RDONLY) ) < 0 )
   // while( beginUART() < 0 )
@@ -699,7 +778,7 @@ int main(int argc, char *argv[]) {
   runtime_opt.drop_priv_group = getenv("SUDO_GID");
   if (!rgb_matrix::ParseOptionsFromFlags(&argc, &argv,
                                          &matrix_options, &runtime_opt)) {
-    return usage(argv[0]);
+    // return usage(argv[0]);
   }
 
   bool do_mmap = false;
@@ -714,13 +793,12 @@ int main(int argc, char *argv[]) {
   // We map the pointer instad of the string of the argv parameter so that
   // we can have two times the same image on the commandline list with different
   // parameters.
-  std::map<const void *, struct ImageParams> filename_params;
 
   // Set defaults.
   ImageParams img_param;
-  for (int i = 0; i < argc; ++i) {
-    filename_params[argv[i]] = img_param;
-  }
+  // for (int i = 0; i < argc; ++i) {
+    // filename_params[argv[i]] = img_param;
+  // }
 
   const char *stream_output = NULL;
 
@@ -788,23 +866,12 @@ int main(int argc, char *argv[]) {
     // Starting from the current file, set all the remaining files to
     // the latest change.
 
-    // TODO: split file lists based on folder
-    for (int i = optind; i < argc; ++i) {
-      if ( strcmp(argv[i],"idle") == 0 )
-      {
-        idle_start = i - optind;
-      }
-      else
-      {
-        filename_params[argv[i]] = img_param;
-      }
-    }
   }
 
   // TODO: no file args required
-  const int filename_count = argc - optind;
+  int filename_count = filename_params.size();
   if (filename_count == 0) {
-    fprintf(stderr, "Expected image filename.\n");
+    fprintf(stderr, "No images found\n");
     return usage(argv[0]);
   }
 
@@ -814,7 +881,7 @@ int main(int argc, char *argv[]) {
   if (matrix == NULL)
     return 1;
 
-  printf( "REQUEST INPUTS: %lu\n", matrix->RequestInputs(1<<SPIN_SYNC) );
+  // printf( "REQUEST INPUTS: %lu\n", matrix->RequestInputs(1<<SPIN_SYNC) );
 
   offscreen_canvas = matrix->CreateFrameCanvas();
 
@@ -829,17 +896,20 @@ int main(int argc, char *argv[]) {
   rgb_matrix::StreamWriter *global_stream_writer = NULL;
 
   const tmillis_t start_load = GetTimeInMillis();
-  fprintf(stderr, "Loading %d files...\n", argc - optind);
+  fprintf(stderr, "Loading %d files...\n", filename_count);
   // Preparing all the images beforehand as the Pi might be too slow to
   // be quickly switching between these. So preprocess.
   std::vector<FileInfo*> file_imgs;
-  for (int imgarg = optind; imgarg < argc; ++imgarg) {
-    const char *filename = argv[imgarg];
+  // for (int imgarg = 0; imgarg < argc; ++imgarg) {
+  for( auto it = filename_params.begin(); it != filename_params.end(); ++it)
+    {
+    const void* filename = it->first;
+    std::cout << "Loaded :" << (const char*)(filename) << std::endl;
     FileInfo *file_info = NULL;
 
     std::string err_msg;
     std::vector<Magick::Image> image_sequence;
-    if (LoadImageAndScale(filename, matrix->width(), matrix->height(),
+    if (LoadImageAndScale((const char*)filename, matrix->width(), matrix->height(),
                           fill_width, fill_height, &image_sequence, &err_msg)) {
       file_info = new FileInfo();
       file_info->params = filename_params[filename];
@@ -849,7 +919,7 @@ int main(int argc, char *argv[]) {
       for (size_t i = 0; i < image_sequence.size(); ++i) {
         const Magick::Image &img = image_sequence[i];
         StoreInStream(img, (int64_t)0, do_center, offscreen_canvas, &out);
-      }         
+      }
     }
     if (file_info) {
       // TODO: split based on state
@@ -894,8 +964,8 @@ int main(int argc, char *argv[]) {
   // char read_buf [UART_BUF_SIZE];
   // size_t uart_buf_head = 0; // how many valid bytes currently in uart_buf
 
-  // pthread_create(&uart_thread, NULL, process_uart, NULL);
-  // fprintf(stderr, "PTHREAD : %lu\n",uart_thread);
+  pthread_create(&zmq_thread, NULL, zmq_loop, &socket);
+  fprintf(stderr, "PTHREAD : %lu\n", zmq_thread);
   
   // do the actual displaying
   size_t i = 0;
@@ -923,7 +993,7 @@ int main(int argc, char *argv[]) {
       // if(sync == 0)
       //   i++;
     }
-    if( i > file_imgs.size()-1 )
+    if( ++i > file_imgs.size()-1 )
     {
       sync_idling = 1;
       sync_frame = idle_start;
