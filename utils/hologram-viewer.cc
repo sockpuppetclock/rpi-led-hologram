@@ -112,7 +112,7 @@ struct AnimState {
 
 static std::map<std::string,AnimState> state_machine; // state name, anim state
 static std::vector<rgb_matrix::StreamIO*> *current_stream_list;
-static AnimState *current_state;
+static AnimState current_state;
 static volatile AnimState *next_state;
 
 volatile bool interrupt_received = false;
@@ -391,48 +391,49 @@ void* zmq_loop (void* s)
     char* cmd = (char*)(update.data());
     // std::cout << "update : " << cmd[0] << std::endl;
 
-    if (cmd[0] == "\x01")
+    if (cmd[0] == 0x01 )
     {
         // command byte: refresh images
         reinitImages();
     }
-    else if (cmd[0] == "\x02")
-    {
-      // command byte: change animation state
-      std::string name;
-      strcpy(name, update.data().substr(1,update.data().size()-1));
-      auto found = state_machine.find(name);
-      if( found != state_machine.end() )
-      {
-        next_state = found->second;
-      }
+  //   else if (cmd[0] == "\x02")
+  //   {
+  //     // command byte: change animation state
+  //     // std::string name;
+  //     // strcpy(name, update.data().substr(1,update.data().size()-1));
+  //     // auto found = state_machine.find(name);
+  //     // if( found != state_machine.end() )
+  //     // {
+  //     //   next_state = found->second;
+  //     // }
       
-    }
-    else if (cmd[0] == "\x03")
-    {
-        // command byte: receive touch 
-        if( cmd[1] == 'L' )
+  //   }
+  //   else if (cmd[0] == "\x03")
+  //   {
+  //       // command byte: receive touch 
+  //       if( cmd[1] == 'L' )
           
-        else if( cmd[1] == 'R' )
+  //       else if( cmd[1] == 'R' )
 
-        if( cmd[2] != '\0')
-        {
-          if( cmd[2] == 'L' )
-          {
+  //       if( cmd[2] != '\0')
+  //       {
+  //         if( cmd[2] == 'L' )
+  //         {
             
-          }
-          else if( cmd[2] == 'R' )
-          {
+  //         }
+  //         else if( cmd[2] == 'R' )
+  //         {
 
-          }
-        }
-    }
-    else
-    {
-        // default : no command byte recieved recognized 
-    }
+  //         }
+  //       }
+  //   }
+  //   else
+  //   {
+  //       // default : no command byte recieved recognized 
+  //   }
+  // }
+    return nullptr;
   }
-  return nullptr;
 }
 
 // rotation_drift++;
@@ -826,6 +827,8 @@ int reinitImages()
 {
   std::map< std::string, std::vector<std::string> > file_list = GetFileList2();
   int total_files = 0;
+
+  ImageParam img_param;
   // create all animstates
   for(auto const &iter : file_list)
   {
@@ -840,7 +843,7 @@ int reinitImages()
       std::string err_msg;
       std::vector<Magick::Image> image_sequence;
       if (LoadImageAndScale((const char*)filename, matrix->width(), matrix->height(),
-                            fill_width, fill_height, &image_sequence, &err_msg)) {
+                            false, false, &image_sequence, &err_msg)) {
         file_info = new FileInfo();
         file_info->params = img_param;
         file_info->content_stream = new rgb_matrix::MemStreamIO();
@@ -848,7 +851,7 @@ int reinitImages()
         rgb_matrix::StreamWriter out(file_info->content_stream);
         for (size_t i = 0; i < image_sequence.size(); ++i) {
           const Magick::Image &img = image_sequence[i];
-          StoreInStream(img, (int64_t)0, do_center, offscreen_canvas, &out);
+          StoreInStream(img, (int64_t)0, false, offscreen_canvas, &out);
         }
       }
       if (file_info) {
@@ -865,12 +868,12 @@ int reinitImages()
   }
 
   const std::string idle_str = "_Idle";
-  for(auto const &iter : state_machine)
+  for(auto &iter : state_machine)
   {
     if(iter.first.size() > 5 && iter.first.compare(iter.first.size() - idle_str.size(), iter.first.size(), idle_str) == 0)
     {
       std::cout << iter.first << " is idle of " << iter.first.substr(iter.first.size() - idle_str.size()) << std::endl;
-      state_machine[iter.first.substr(0, iter.first.size() - idle_str.size())].next = *(iter.second);
+      // state_machine[iter.first.substr(0, iter.first.size() - idle_str.size())].next = *(iter.second);
     }
   }
 
@@ -1138,9 +1141,12 @@ int main(int argc, char *argv[]) {
   pthread_create(&zmq_thread, NULL, zmq_loop, &socket);
   fprintf(stderr, "PTHREAD: %lu\n", zmq_thread);
 
-  current_state = *state_machine["Idle"];
-  current_stream_list = *(current_state->stream_list); // default
-  int current_size = current_state->size;
+  // current_state = *state_machine["Idle"];
+  // current_stream_list = *(current_state->stream_list); // default
+  // int current_size = current_state->size;
+
+  current_state = state_machine.at(std::string("Idle"));
+  int current_size = current_state.size;
 
   // do the actual displaying
   size_t i = 0;

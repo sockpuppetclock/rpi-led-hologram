@@ -79,16 +79,16 @@ def main():
     try:
         # main loop #
         while True:
-            message = socket.recv()
-            print(f"Received request : {message}")
-            if(message == "\x01"):
-                socket.send_string("World")
-            else:
-                socket.send_string("0")
-            print("Sent")
+            # message = socket.recv()
+            # print(f"Received request : {message}")
+            # if(message == "\x01"):
+            #     socket.send_string("World")
+            # else:
+            #     socket.send_string("0")
+            # print("Sent")
             if ser.in_waiting:
                 control_byte = ser.read(1)
-                print("control:"+control_byte)
+                print(f"control: {control_byte}")
 
                 # sending image
                 if control_byte == b'\x01':
