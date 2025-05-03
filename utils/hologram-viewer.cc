@@ -394,7 +394,7 @@ void* zmq_loop (void* s)
     if (cmd[0] == 0x01 )
     {
         // command byte: refresh images
-        reinitImages();
+        // reinitImages();
     }
   //   else if (cmd[0] == "\x02")
   //   {
@@ -828,7 +828,7 @@ int reinitImages()
   std::map< std::string, std::vector<std::string> > file_list = GetFileList2();
   int total_files = 0;
 
-  ImageParam img_param;
+  ImageParams img_param;
   // create all animstates
   for(auto const &iter : file_list)
   {
@@ -1145,7 +1145,9 @@ int main(int argc, char *argv[]) {
   // current_stream_list = *(current_state->stream_list); // default
   // int current_size = current_state->size;
 
-  current_state = state_machine.at(std::string("Idle"));
+  // demo code
+  current_state = state_machine.at(std::string("Speaking"));
+  current_stream_list = &(current_state.stream_list);
   int current_size = current_state.size;
 
   // do the actual displaying
@@ -1159,34 +1161,35 @@ int main(int argc, char *argv[]) {
       do_reset = false;
     }
 
-    // uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
-    // if( prev_angle > slice_angle )
-    //   i += slice_angle + SLICE_COUNT - prev_angle;
-    // else
-    //   i += slice_angle - prev_angle;
+    uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
+    if( prev_angle > slice_angle )
+      i += slice_angle + SLICE_COUNT - prev_angle;
+    else
+      i += slice_angle - prev_angle;
 
-    i++;
+    // i++; // demo code
 
     if( i >= current_size )
     {
-      if( next_state != current_state )
-      {
-        current_state = next_state;
-        current_stream_list = *(current_state->stream_list);
-        current_size = current_state->size;
-        i = 0;
-      }
-      if( current_state->loop )
-      {
-        i = 0;
-      }
-      else if(current_state->next != nullptr)
-      {
-        current_state = current_state->next;
-        current_stream_list = *(current_state->stream_list);
-        current_size = current_state->size;
-        i = 0;
-      }
+      i = 0;
+      // if( next_state != current_state )
+      // {
+      //   current_state = next_state;
+      //   current_stream_list = *(current_state->stream_list);
+      //   current_size = current_state->size;
+      //   i = 0;
+      // }
+      // if( current_state->loop )
+      // {
+      //   i = 0;
+      // }
+      // else if(current_state->next != nullptr)
+      // {
+      //   current_state = current_state->next;
+      //   current_stream_list = *(current_state->stream_list);
+      //   current_size = current_state->size;
+      //   i = 0;
+      // }
     }
 
     // DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);

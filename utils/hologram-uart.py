@@ -15,7 +15,7 @@ ser = None
 
 def OpenSerial():
     global ser
-    ser = serial.Serial('/dev/ttyS0', 2000000, timeout=1)
+    ser = serial.Serial('/dev/ttyS0', 115200, timeout=1)
     print("opened /dev/ttyS0")
 
 def CloseSerial():
@@ -79,13 +79,13 @@ def main():
     try:
         # main loop #
         while True:
-            # message = socket.recv()
-            # print(f"Received request : {message}")
-            # if(message == "\x01"):
-            #     socket.send_string("World")
-            # else:
-            #     socket.send_string("0")
-            # print("Sent")
+            message = socket.recv()
+            print(f"Received request : {message}")
+            if(message == "\x01"):
+                socket.send_string("World")
+            else:
+                socket.send_string("0")
+            print("Sent")
             if ser.in_waiting:
                 control_byte = ser.read(1)
                 print(f"control: {control_byte}")
