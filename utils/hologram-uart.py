@@ -104,8 +104,8 @@ def main():
                     ReceiveSwipe()
 
                 # receive gesture
-                elif control_byte == b'\x04':
-                    ReceiveGesture()
+                # elif control_byte == b'\x04':
+                #     ReceiveGesture()
     except KeyboardInterrupt:
         CloseSerial()
 

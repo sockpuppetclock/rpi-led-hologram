@@ -71,7 +71,7 @@ typedef int64_t tmillis_t;
 static const tmillis_t distant_future = (1LL<<40); // that is a while.
 volatile uint32_t *timer_uS; // microsecond timer
 
-static volatile char* anim_state = NULL;
+static char* anim_state = NULL;
 static int serial_fd;
 static uint8_t read_buf[UART_BUF_SIZE]; // rolling UART buffer
 static volatile size_t uart_buf_head = 0; // length of stored buffer
@@ -105,14 +105,14 @@ struct FileInfo {
 
 struct AnimState {
   std::vector<rgb_matrix::StreamIO*> stream_list; // list of pointers
-  int now = 0;
-  int max = 0;
-  bool loop = 0; // loop or progress (next)
-  AnimState* next; // e.g. anim to idle state
+  int size = 0;
+  bool loop = false; // loop or progress (next)
+  AnimState* next = nullptr; // e.g. anim to idle state
 };
 
-std::map<std::string,AnimState> state_machine; // state name, anim state
+static std::map<std::string,AnimState> state_machine; // state name, anim state
 static std::vector<rgb_matrix::StreamIO*> *current_stream_list;
+static AnimState *current_state;
 
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
@@ -211,7 +211,7 @@ static uint32_t rotation_current_angle(void) {
   
   static uint32_t current = 0;
 
-  int sync = 1; //(matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
+  int sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
   if (sync != sync_level) {
     sync_level = sync;
     
@@ -390,10 +390,30 @@ void* zmq_loop (void* s)
     char* cmd = (char*)(update.data());
     // std::cout << "update : " << cmd[0] << std::endl;
 
-    // TODO: DO STUFF ON DIFFERENT CMDS
+    if (cmd[0] == "\x01")
+    {
+        // command byte: refresh images
+        
+    }
+    else if (cmd[0] == "\x02")
+    {
+      // command byte: change animation state
+
+    }
+    else if (cmd[0] == "\x03")
+    {
+        // command byte: receive touch 
+
+    }
+    else
+    {
+        // default : no command byte recieved recognized 
+    }
   }
   return nullptr;
 }
+
+// rotation_drift++;
 
 // static int beginUART() {
 //   serial_fd = open("/dev/ttyS0", O_RDWR);
@@ -741,9 +761,10 @@ std::map< std::string, std::vector<std::string> > GetFileList2()
   {
     if(entry.is_directory())
     {
-      std::string dir = entry.path().string();
+      std::string dir = entry.path().stem().string();
       // grab list, sort list
       std::vector<std::string> f_list;
+      std::cout << dir << std::endl;
       int fc = 0;
       for( const auto & entry2 : fs::directory_iterator(entry.path()) )
       {
@@ -778,6 +799,62 @@ std::map< std::string, std::vector<std::string> > GetFileList2()
   return new_list;
 }
 
+// store images in state_machine
+int reinitImages()
+{
+  std::map< std::string, std::vector<std::string> > file_list = GetFileList2();
+  int total_files = 0;
+  // create all animstates
+  for(auto const &iter : file_list)
+  {
+    std::string dir = iter.first;
+    AnimState state;
+    for( auto it = iter.second.begin(); it != iter.second.end(); ++it)
+    {
+      const char* filename = (const char*)it->c_str();
+      // std::cout << "Loaded :" << (const char*)(filename) << std::endl;
+      FileInfo *file_info = NULL;
+
+      std::string err_msg;
+      std::vector<Magick::Image> image_sequence;
+      if (LoadImageAndScale((const char*)filename, matrix->width(), matrix->height(),
+                            fill_width, fill_height, &image_sequence, &err_msg)) {
+        file_info = new FileInfo();
+        file_info->params = img_param;
+        file_info->content_stream = new rgb_matrix::MemStreamIO();
+        file_info->is_multi_frame = image_sequence.size() > 1;
+        rgb_matrix::StreamWriter out(file_info->content_stream);
+        for (size_t i = 0; i < image_sequence.size(); ++i) {
+          const Magick::Image &img = image_sequence[i];
+          StoreInStream(img, (int64_t)0, do_center, offscreen_canvas, &out);
+        }
+      }
+      if (file_info) {
+        state.stream_list.push_back(file_info->content_stream);
+        state.size++;
+        total_files++;
+        // file_imgs.push_back(file_info);
+      } else {
+        fprintf(stderr, "%s skipped: Unable to open (%s)\n",
+                filename, err_msg.c_str());
+      }
+    }
+    state_machine[dir] = state;
+  }
+
+  const std::string idle_str = "_Idle";
+  for(auto const &iter : state_machine)
+  {
+    if(iter.first.size() > 5 && iter.first.compare(iter.first.size() - idle_str.size(), iter.first.size(), idle_str) == 0)
+    {
+      std::cout << iter.first << " is idle of " << iter.first.substr(iter.first.size() - idle_str.size()) << std::endl;
+      state_machine[iter.first.substr(iter.first.size() - idle_str.size())].next = *(iter.second);
+    }
+  }
+
+  return total_files;
+}
+
 int main(int argc, char *argv[]) {
   Magick::InitializeMagick(*argv);
 
@@ -806,7 +883,7 @@ int main(int argc, char *argv[]) {
 
   std::cout << "Getting file list..." << std::endl;
   // std::map<const void *, struct ImageParams> filename_params = GetFileList();
-  std::map< std::string, std::vector<std::string> > file_list = GetFileList2();
+  // std::map< std::string, std::vector<std::string> > file_list = GetFileList2();
 
   // while( (serial_fd = open("/dev/ttyS0", O_RDONLY) ) < 0 )
   // while( beginUART() < 0 )
@@ -919,17 +996,6 @@ int main(int argc, char *argv[]) {
 
   }
 
-  // TODO: no file args required
-  int filename_count = 0;
-  for(auto const &iter : file_list)
-  {
-    filename_count += iter.second.size();
-  }
-  if (filename_count == 0) {
-    fprintf(stderr, "No images found\n");
-    return usage(argv[0]);
-  }
-
   // Prepare matrix
   runtime_opt.do_gpio_init = (stream_output == NULL);
   matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
@@ -940,6 +1006,18 @@ int main(int argc, char *argv[]) {
 
   offscreen_canvas = matrix->CreateFrameCanvas();
 
+  int filename_count = reinitImages();
+
+  // int filename_count = 0;
+  // for(auto const &iter : file_list)
+  // {
+  //   filename_count += iter.second.size();
+  // }
+  if (filename_count == 0) {
+    fprintf(stderr, "No images found\n");
+    return usage(argv[0]);
+  }
+
   printf("Size: %dx%d. Hardware gpio mapping: %s\n",
          matrix->width(), matrix->height(), matrix_options.hardware_mapping);
 
@@ -947,69 +1025,78 @@ int main(int argc, char *argv[]) {
   const bool fill_width = false;
   const bool fill_height = false;
 
-  // In case the output to stream is requested, set up the stream object.
-  rgb_matrix::StreamWriter *global_stream_writer = NULL;
-
   const tmillis_t start_load = GetTimeInMillis();
   fprintf(stderr, "Loading %d files...\n", filename_count);
   // Preparing all the images beforehand as the Pi might be too slow to
   // be quickly switching between these. So preprocess.
-  std::vector<FileInfo*> file_imgs;
+  // std::vector<FileInfo*> file_imgs;
   // for (int imgarg = 0; imgarg < argc; ++imgarg) {
   
-  for(auto const &iter : file_list)
-  {
-    std::string dir = iter.first;
-    AnimState state;
-    for( auto it = iter.second.begin(); it != iter.second.end(); ++it)
-    {
-      const char* filename = (const char*)it->c_str();
-      // std::cout << "Loaded :" << (const char*)(filename) << std::endl;
-      FileInfo *file_info = NULL;
+  // // create all animstates
+  // for(auto const &iter : file_list)
+  // {
+  //   std::string dir = iter.first;
+  //   AnimState state;
+  //   for( auto it = iter.second.begin(); it != iter.second.end(); ++it)
+  //   {
+  //     const char* filename = (const char*)it->c_str();
+  //     // std::cout << "Loaded :" << (const char*)(filename) << std::endl;
+  //     FileInfo *file_info = NULL;
 
-      std::string err_msg;
-      std::vector<Magick::Image> image_sequence;
-      if (LoadImageAndScale((const char*)filename, matrix->width(), matrix->height(),
-                            fill_width, fill_height, &image_sequence, &err_msg)) {
-        file_info = new FileInfo();
-        file_info->params = img_param;
-        file_info->content_stream = new rgb_matrix::MemStreamIO();
-        file_info->is_multi_frame = image_sequence.size() > 1;
-        rgb_matrix::StreamWriter out(file_info->content_stream);
-        for (size_t i = 0; i < image_sequence.size(); ++i) {
-          const Magick::Image &img = image_sequence[i];
-          StoreInStream(img, (int64_t)0, do_center, offscreen_canvas, &out);
-        }
-      }
-      if (file_info) {
-        state.stream_list.push_back(file_info->content_stream);
-        file_imgs.push_back(file_info);
-      } else {
-        fprintf(stderr, "%s skipped: Unable to open (%s)\n",
-                filename, err_msg.c_str());
-      }
-    }
-    state_machine[dir] = state;
-  }
+  //     std::string err_msg;
+  //     std::vector<Magick::Image> image_sequence;
+  //     if (LoadImageAndScale((const char*)filename, matrix->width(), matrix->height(),
+  //                           fill_width, fill_height, &image_sequence, &err_msg)) {
+  //       file_info = new FileInfo();
+  //       file_info->params = img_param;
+  //       file_info->content_stream = new rgb_matrix::MemStreamIO();
+  //       file_info->is_multi_frame = image_sequence.size() > 1;
+  //       rgb_matrix::StreamWriter out(file_info->content_stream);
+  //       for (size_t i = 0; i < image_sequence.size(); ++i) {
+  //         const Magick::Image &img = image_sequence[i];
+  //         StoreInStream(img, (int64_t)0, do_center, offscreen_canvas, &out);
+  //       }
+  //     }
+  //     if (file_info) {
+  //       state.stream_list.push_back(file_info->content_stream);
+  //       state.size++;
+  //       // file_imgs.push_back(file_info);
+  //     } else {
+  //       fprintf(stderr, "%s skipped: Unable to open (%s)\n",
+  //               filename, err_msg.c_str());
+  //     }
+  //   }
+  //   state_machine[dir] = state;
+  // }
+
+  // const std::string idle_str = "_Idle";
+  // for(auto const &iter : state_machine)
+  // {
+  //   if(iter.first.size() > 5 && iter.first.compare(iter.first.size() - idle_str.size(), iter.first.size(), idle_str) == 0)
+  //   {
+  //     std::cout << iter.first << " is idle" << std::endl;
+  //     state_machine[iter.first.substr(iter.first.size() - idle_str.size())].next = *(iter.second);
+  //   }
+  // }
 
   // Some parameter sanity adjustments.
-  if (file_imgs.empty()) {
-    // e.g. if all files could not be interpreted as image.
-    fprintf(stderr, "No image could be loaded.\n");
-    // return 1;
-  } else if (file_imgs.size() == 1) {
-    // Single image: show forever.
-    file_imgs[0]->params.wait_ms = distant_future;
-  } else {
-    for (size_t i = 0; i < file_imgs.size(); ++i) {
-      ImageParams &params = file_imgs[i]->params;
-      // Forever animation ? Set to loop only once, otherwise that animation
-      // would just run forever, stopping all the images after it.
-      if (params.loops < 0 && params.anim_duration_ms == distant_future) {
-        params.loops = 1;
-      }
-    }
-  }
+  // if (file_imgs.empty()) {
+  //   // e.g. if all files could not be interpreted as image.
+  //   fprintf(stderr, "No image could be loaded.\n");
+  //   // return 1;
+  // } else if (file_imgs.size() == 1) {
+  //   // Single image: show forever.
+  //   file_imgs[0]->params.wait_ms = distant_future;
+  // } else {
+  //   for (size_t i = 0; i < file_imgs.size(); ++i) {
+  //     ImageParams &params = file_imgs[i]->params;
+  //     // Forever animation ? Set to loop only once, otherwise that animation
+  //     // would just run forever, stopping all the images after it.
+  //     if (params.loops < 0 && params.anim_duration_ms == distant_future) {
+  //       params.loops = 1;
+  //     }
+  //   }
+  // }
 
   fprintf(stderr, "Loading took %.3fs; now: Display.\n",
           (GetTimeInMillis() - start_load) / 1000.0);
@@ -1027,40 +1114,74 @@ int main(int argc, char *argv[]) {
   // size_t uart_buf_head = 0; // how many valid bytes currently in uart_buf
 
   pthread_create(&zmq_thread, NULL, zmq_loop, &socket);
-  fprintf(stderr, "PTHREAD : %lu\n", zmq_thread);
-  
+  fprintf(stderr, "PTHREAD: %lu\n", zmq_thread);
+
+  current_state = *state_machine["Idle"];
+  current_stream_list = *(current_state->stream_list); // default
+  int current_size = current_state->size;
+
   // do the actual displaying
   size_t i = 0;
+  uint16_t prev_angle = 0;
+  uint16_t slice_angle = 0;
+
   do {
     if(do_reset == true){
-      sync_frame = 0;
       i = 0;
       do_reset = false;
     }
 
     // uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
+    // if( prev_angle > slice_angle )
+    //   i += slice_angle + SLICE_COUNT - prev_angle;
+    // else
+    //   i += slice_angle - prev_angle;
+
+    i++;
+
+    if( i >= current_size )
+    {
+      if( current_state->loop )
+      {
+        i = 0;
+      }
+      else if(current_state->next != nullptr)
+      {
+        current_state = current_state->next;
+        current_stream_list = *(current_state->stream_list);
+        i = 0;
+      }
+    }
 
     // DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
-    DisplayAnimation2(current_stream_list, i);
 
-    sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
-    if( sync_last != sync)
+    rgb_matrix::StreamReader reader(current_stream_list->at(i));
+    while(!interrupt_received && reader.GetNext(offscreen_canvas, &d_us))
     {
-      sync_last = sync;
-      // only loop on idle
-      if (sync == 0 && sync_idling == 1 )
-      {
-        i = sync_frame;
-      }
-      // if(sync == 0)
-      //   i++;
+      offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, 1);
     }
-    if( ++i > file_imgs.size()-1 )
-    {
-      sync_idling = 1;
-      sync_frame = idle_start;
-      i = idle_start;
-    }
+    reader.Rewind();
+
+    // sync rotation //
+    // sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
+    // if( sync_last != sync)
+    // {
+    //   sync_last = sync;
+    //   // only loop on idle
+    //   if (sync == 0 && sync_idling == 1 )
+    //   {
+    //     i = sync_frame;
+    //   }
+    //   // if(sync == 0)
+    //   //   i++;
+    // }
+
+    // if( i > file_imgs.size()-1 )
+    // {
+    //   sync_idling = 1;
+    //   sync_frame = idle_start;
+    //   i = idle_start;
+    // }
   } while (do_forever && !interrupt_received);
 
   // pthread_join(uart_thread, nullptr);
