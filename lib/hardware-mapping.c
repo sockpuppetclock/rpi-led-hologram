@@ -37,8 +37,8 @@ struct HardwareMapping matrix_hardware_mappings[] = {
     .a             = GPIO_BIT(22),
     .b             = GPIO_BIT(23),
     .c             = GPIO_BIT(24),
-    .d             = GPIO_BIT(25),
-    .e             = GPIO_BIT(1),  // GPIO_BIT(15),  /* RxD kept free unless 1:64 */
+    .d             = GPIO_BIT(1),
+    .e             = GPIO_BIT(25),  // GPIO_BIT(15),  /* RxD kept free unless 1:64 */
 
     /* Parallel chain 0, RGB for both sub-panels */
     .p0_r1         = GPIO_BIT(12),  /* masks: SPI0_SCKL  */
