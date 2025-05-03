@@ -104,14 +104,15 @@ struct FileInfo {
 };
 
 struct AnimState {
-  char *name;
-  rgb_matrix::StreamIO** streams; // list of pointers
-  int current = 0;
+  std::vector<rgb_matrix::StreamIO> *stream_list; // list of pointers
+  int now = 0;
   int max = 0;
-  int loop_point = 0;
+  bool loop = 0; // loop or progress (next)
+  AnimState* next; // e.g. anim to idle state
 };
 
-std::map<char *,AnimState> state_machine; // state name, anim state
+std::map<std::string,AnimState> state_machine; // state name, anim state
+static rgb_matrix::StreamIO *current_stream_list;
 
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
@@ -305,7 +306,7 @@ static bool LoadImageAndScale(const char *filename,
 }
 
 uint32_t d_us = 0;
-void DisplayAnimation2(const FileInfo *file, int c) {
+void DisplayAnimation2(const FileInfo *file, int i) {
   
   // rgb_matrix::StreamReader reader(state_machine[state].streams[c]); // get the image stream
   rgb_matrix::StreamReader reader(file->content_stream); 
@@ -957,9 +958,11 @@ int main(int argc, char *argv[]) {
   
   for(auto const &iter : file_list)
   {
-  for( auto it = iter.second.begin(); it != iter.second.end(); ++it)
+    std::string dir = iter.first;
+    AnimState state;
+    for( auto it = iter.second.begin(); it != iter.second.end(); ++it)
     {
-      const void* filename = it;
+      const char* filename = (const char*)it->c_str();
       // std::cout << "Loaded :" << (const char*)(filename) << std::endl;
       FileInfo *file_info = NULL;
 
@@ -968,7 +971,7 @@ int main(int argc, char *argv[]) {
       if (LoadImageAndScale((const char*)filename, matrix->width(), matrix->height(),
                             fill_width, fill_height, &image_sequence, &err_msg)) {
         file_info = new FileInfo();
-        file_info->params = filename_params[filename];
+        file_info->params = img_param;
         file_info->content_stream = new rgb_matrix::MemStreamIO();
         file_info->is_multi_frame = image_sequence.size() > 1;
         rgb_matrix::StreamWriter out(file_info->content_stream);
@@ -978,13 +981,13 @@ int main(int argc, char *argv[]) {
         }
       }
       if (file_info) {
-        // TODO: split based on state
-        file_imgs.push_back(file_info);
+        // file_imgs.push_back(file_info);
       } else {
         fprintf(stderr, "%s skipped: Unable to open (%s)\n",
                 filename, err_msg.c_str());
       }
     }
+    state_machine[dir] = state;
   }
 
   // Some parameter sanity adjustments.
@@ -1035,8 +1038,8 @@ int main(int argc, char *argv[]) {
 
     // uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
 
-    DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
-    // DisplayAnimation2((char*)anim_state, i);
+    // DisplayAnimation(file_stimgs[i], matrix, offscreen_canvas);
+    // DisplayAnimation2(current_stream_list, i);
 
     sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
     if( sync_last != sync)
