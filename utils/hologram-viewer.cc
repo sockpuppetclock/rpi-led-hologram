@@ -104,7 +104,7 @@ struct FileInfo {
 };
 
 struct AnimState {
-  std::vector<rgb_matrix::StreamIO> *stream_list; // list of pointers
+  std::vector<rgb_matrix::StreamIO*> stream_list; // list of pointers
   int now = 0;
   int max = 0;
   bool loop = 0; // loop or progress (next)
@@ -112,7 +112,7 @@ struct AnimState {
 };
 
 std::map<std::string,AnimState> state_machine; // state name, anim state
-static rgb_matrix::StreamIO *current_stream_list;
+static std::vector<rgb_matrix::StreamIO*> *current_stream_list;
 
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
@@ -306,10 +306,10 @@ static bool LoadImageAndScale(const char *filename,
 }
 
 uint32_t d_us = 0;
-void DisplayAnimation2(const FileInfo *file, int i) {
+void DisplayAnimation2(std::vector<rgb_matrix::StreamIO*> *list, int i) {
   
   // rgb_matrix::StreamReader reader(state_machine[state].streams[c]); // get the image stream
-  rgb_matrix::StreamReader reader(file->content_stream); 
+  rgb_matrix::StreamReader reader(list->at(i)); 
   while(!interrupt_received && reader.GetNext(offscreen_canvas, &d_us))
   {
     offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, 1);
@@ -767,10 +767,11 @@ std::map< std::string, std::vector<std::string> > GetFileList2()
         std::sort(f_list.begin(), f_list.end());
       }
       std::cout << ++i << " " << fc << std::endl;
-      for (const auto& itr : f_list)
-      {
-          std::cout << itr << std::endl;
-      }
+      // for (const auto& itr : f_list)
+      // {
+          // std::cout << itr << std::endl;
+      // }
+      new_list[dir] = f_list;
     }
   }
 
@@ -981,7 +982,8 @@ int main(int argc, char *argv[]) {
         }
       }
       if (file_info) {
-        // file_imgs.push_back(file_info);
+        state.stream_list.push_back(file_info->content_stream);
+        file_imgs.push_back(file_info);
       } else {
         fprintf(stderr, "%s skipped: Unable to open (%s)\n",
                 filename, err_msg.c_str());
@@ -991,10 +993,10 @@ int main(int argc, char *argv[]) {
   }
 
   // Some parameter sanity adjustments.
-  if (file_imgs.empty()) { // TODO: have default.png to avoid segfault
+  if (file_imgs.empty()) {
     // e.g. if all files could not be interpreted as image.
     fprintf(stderr, "No image could be loaded.\n");
-    return 1;
+    // return 1;
   } else if (file_imgs.size() == 1) {
     // Single image: show forever.
     file_imgs[0]->params.wait_ms = distant_future;
@@ -1038,8 +1040,8 @@ int main(int argc, char *argv[]) {
 
     // uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
 
-    // DisplayAnimation(file_stimgs[i], matrix, offscreen_canvas);
-    // DisplayAnimation2(current_stream_list, i);
+    // DisplayAnimation(file_imgs[i], matrix, offscreen_canvas);
+    DisplayAnimation2(current_stream_list, i);
 
     sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
     if( sync_last != sync)
