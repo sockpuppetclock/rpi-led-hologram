@@ -390,6 +390,26 @@ void* zmq_loop (void* s)
     // std::cout << "update : " << cmd[0] << std::endl;
 
     // TODO: DO STUFF ON DIFFERENT CMDS
+
+    if (cmd[0] == "\x01")
+    {
+        // command byte: receive image
+      
+    }
+    else if (cmd[0] == "\x02")
+    {
+        // command byte: change animation state
+
+    }
+    else if (cmd[0] == "\x03")
+    {
+        // command byte: receive touch 
+
+    }
+    else
+    {
+        // default : no command byte recieved recognized 
+    }
   }
   return nullptr;
 }
