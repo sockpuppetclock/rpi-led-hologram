@@ -113,6 +113,7 @@ struct AnimState {
 static std::map<std::string,AnimState> state_machine; // state name, anim state
 static std::vector<rgb_matrix::StreamIO*> *current_stream_list;
 static AnimState *current_state;
+static volatile AnimState *next_state;
 
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
@@ -393,17 +394,38 @@ void* zmq_loop (void* s)
     if (cmd[0] == "\x01")
     {
         // command byte: refresh images
-        
+        reinitImages();
     }
     else if (cmd[0] == "\x02")
     {
       // command byte: change animation state
-
+      std::string name;
+      strcpy(name, update.data().substr(1,update.data().size()-1));
+      auto found = state_machine.find(name);
+      if( found != state_machine.end() )
+      {
+        next_state = found->second;
+      }
+      
     }
     else if (cmd[0] == "\x03")
     {
         // command byte: receive touch 
+        if( cmd[1] == 'L' )
+          
+        else if( cmd[1] == 'R' )
 
+        if( cmd[2] != '\0')
+        {
+          if( cmd[2] == 'L' )
+          {
+            
+          }
+          else if( cmd[2] == 'R' )
+          {
+
+          }
+        }
     }
     else
     {
@@ -848,7 +870,7 @@ int reinitImages()
     if(iter.first.size() > 5 && iter.first.compare(iter.first.size() - idle_str.size(), iter.first.size(), idle_str) == 0)
     {
       std::cout << iter.first << " is idle of " << iter.first.substr(iter.first.size() - idle_str.size()) << std::endl;
-      state_machine[iter.first.substr(iter.first.size() - idle_str.size())].next = *(iter.second);
+      state_machine[iter.first.substr(0, iter.first.size() - idle_str.size())].next = *(iter.second);
     }
   }
 
@@ -1141,6 +1163,13 @@ int main(int argc, char *argv[]) {
 
     if( i >= current_size )
     {
+      if( next_state != current_state )
+      {
+        current_state = next_state;
+        current_stream_list = *(current_state->stream_list);
+        current_size = current_state->size;
+        i = 0;
+      }
       if( current_state->loop )
       {
         i = 0;
@@ -1149,6 +1178,7 @@ int main(int argc, char *argv[]) {
       {
         current_state = current_state->next;
         current_stream_list = *(current_state->stream_list);
+        current_size = current_state->size;
         i = 0;
       }
     }
