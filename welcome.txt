@@ -1,0 +1,7 @@
+    Welcome!
+ 
+    Display 
+   starting... 
+ 
+       IP 
+ 10.2.154.241

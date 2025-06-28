@@ -9,6 +9,7 @@
 
 #include <getopt.h>
 #include <stdio.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -45,6 +46,11 @@ static bool FullSaturation(const Color &c) {
     && (c.b == 0 || c.b == 255);
 }
 
+volatile bool interrupt_received = false;
+static void InterruptHandler(int signo) {
+  interrupt_received = true;
+}
+
 int main(int argc, char *argv[]) {
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
@@ -52,6 +58,9 @@ int main(int argc, char *argv[]) {
                                          &matrix_options, &runtime_opt)) {
     return usage(argv[0]);
   }
+
+  signal(SIGTERM, InterruptHandler);
+  signal(SIGINT, InterruptHandler);
 
   Color color(255, 255, 0);
   Color bg_color(0, 0, 0);
@@ -65,7 +74,7 @@ int main(int argc, char *argv[]) {
   int letter_spacing = 0;
 
   int opt;
-  while ((opt = getopt(argc, argv, "x:y:f:C:B:O:S:F:")) != -1) {
+  while ((opt = getopt(argc, argv, "x:y:f:C:B:O:S:F:e")) != -1) {
     switch (opt) {
     case 'x': x_orig = atoi(optarg); break;
     case 'y': y_orig = atoi(optarg); break;
@@ -171,6 +180,8 @@ int main(int argc, char *argv[]) {
                          letter_spacing);
     y += font.height();
   }
+
+  while(!interrupt_received);
 
   // Finished. Shut down the RGB matrix.
   delete canvas;

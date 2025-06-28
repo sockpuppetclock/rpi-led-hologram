@@ -211,7 +211,7 @@ static uint32_t rotation_current_angle(void) {
   uint32_t elapsed = tick_curr - sync_prev;
   
   static uint32_t current = 0;
-
+  
   int sync = (matrix->AwaitInputChange(0))>>SPIN_SYNC & 0b1;
   if (sync != sync_level) {
     sync_level = sync;
@@ -225,6 +225,7 @@ static uint32_t rotation_current_angle(void) {
         }
         rotation_history[current] = elapsed;
         rotation_period = median_period();
+        std::cout << rotation_period << std::endl;
 
         rotation_delta = ROTATION_FULL / rotation_period;
         // if (rotation_lock) {
@@ -1027,7 +1028,7 @@ int main(int argc, char *argv[]) {
   if (matrix == NULL)
     return 1;
 
-  // printf( "REQUEST INPUTS: %lu\n", matrix->RequestInputs(1<<SPIN_SYNC) );
+  printf( "REQUEST INPUTS: %lu\n", matrix->RequestInputs(1<<SPIN_SYNC) );
 
   offscreen_canvas = matrix->CreateFrameCanvas();
 
@@ -1146,7 +1147,7 @@ int main(int argc, char *argv[]) {
   // int current_size = current_state->size;
 
   // demo code
-  current_state = state_machine.at(std::string("Speaking"));
+  current_state = state_machine.at(std::string("miku"));
   current_stream_list = &(current_state.stream_list);
   int current_size = current_state.size;
 
@@ -1163,9 +1164,15 @@ int main(int argc, char *argv[]) {
 
     uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
     if( prev_angle > slice_angle )
+    {
       i += slice_angle + SLICE_COUNT - prev_angle;
+    }
     else
+    {
       i += slice_angle - prev_angle;
+    }
+
+    prev_angle = slice_angle;
 
     // i++; // demo code
 
