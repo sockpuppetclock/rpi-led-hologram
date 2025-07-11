@@ -390,12 +390,16 @@ void* zmq_loop (void* s)
     zmq::message_t update;
     socket->recv (update, zmq::recv_flags::none);
     char* cmd = (char*)(update.data());
-    // std::cout << "update : " << cmd[0] << std::endl;
+
+    if( cmd[0] != 0x00 )
+    {
+      std::cout << "update : " << cmd << std::endl;
+    }
 
     if (cmd[0] == 0x01 )
     {
         // command byte: refresh images
-        // reinitImages();
+        reinitImages();
     }
   //   else if (cmd[0] == "\x02")
   //   {
@@ -905,7 +909,7 @@ int main(int argc, char *argv[]) {
 
   zmq::message_t reply;
   socket.recv(reply, zmq::recv_flags::none);
-  std::cout << "Received World" << std::endl;
+  std::cout << "Received" << reply << std::endl;
 
   std::cout << "Getting file list..." << std::endl;
   // std::map<const void *, struct ImageParams> filename_params = GetFileList();
@@ -1141,10 +1145,6 @@ int main(int argc, char *argv[]) {
 
   pthread_create(&zmq_thread, NULL, zmq_loop, &socket);
   fprintf(stderr, "PTHREAD: %lu\n", zmq_thread);
-
-  // current_state = *state_machine["Idle"];
-  // current_stream_list = *(current_state->stream_list); // default
-  // int current_size = current_state->size;
 
   // demo code
   current_state = state_machine.at(std::string("miku"));

@@ -68,7 +68,7 @@ def ReceiveImage():
 
     print(f"File saved: {filepath}")
 
-###
+### UART controller RECEIVES through SERIAL and SENDS through ZEROMQ
 
 def main():
     os.chdir("/hologram/utils/")
@@ -80,12 +80,15 @@ def main():
         # main loop #
         while True:
             message = socket.recv()
+            message = bytes(message)
             print(f"Received request : {message}")
-            if(message == "\x01"):
+            if(message == b'\x01'):
                 socket.send_string("World")
+                print("Sent World")
             else:
                 socket.send_string("0")
-            print("Sent")
+                print("Sent")
+            
             if ser.in_waiting:
                 control_byte = ser.read(1)
                 print(f"control: {control_byte}")

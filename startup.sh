@@ -6,9 +6,9 @@ cat "/hologram/welcome.txt" | /hologram/examples-api-use/text-example --led-rows
 pp="$!"
 sleep 25
 kill -SIGKILL "$pp"
-/hologram/utils/text-scroller --led-rows=64 --led-cols=64 --led-limit-refresh=1500 -C0,255,0 "Starting..." --led-pixel-mapper="Rotate:270" -s 3.1 -f /home/dietpi/u8g2/tools/font/bdf/10x20.bdf -y 23 &
+/hologram/utils/text-scroller --led-rows=64 --led-cols=64 --led-limit-refresh=1500 -C0,255,0 "Starting..." --led-pixel-mapper="Rotate:270" -s 3.2 -f /home/dietpi/u8g2/tools/font/bdf/10x20.bdf -y 23 &
 pp="$!"
-sleep 5
+sleep 6
 kill -SIGKILL "$pp"
 
 /hologram/utils/hologram-uart.py &
