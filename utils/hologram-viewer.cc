@@ -82,6 +82,8 @@ static pthread_t zmq_thread = 0;
 static RGBMatrix *matrix;
 static FrameCanvas *offscreen_canvas;
 
+static std::string IMAGE_PATH = "/hologram/utils/images/";
+
 namespace fs = std::filesystem;
 
 // #define IMAGE_DIR "/hologram/utils/images/"
@@ -163,6 +165,21 @@ static void StoreInStream(const Magick::Image &img, int delay_time_us,
   }
   output->Stream(*scratch, delay_time_us);
 }
+
+// static void StoreRawInStream(const Volume &slices, rgb_matrix::FrameCanvas *scratch,
+//                           rgb_matrix::StreamWriter *output)
+// {
+//   scratch->Clear();
+//   for(size_t y = 0; y < 64; ++y)
+//   {
+//     for(size_t x = 0; x < 64; ++x)
+//     {
+//       // todo: access slice
+//       //scratch->SetPixel(x, y, r, g, b);
+//     }
+//   }
+//   output->Stream(*scratch, 0);
+// }
 
 static void CopyStream(rgb_matrix::StreamReader *r,
                        rgb_matrix::StreamWriter *w,
@@ -743,8 +760,6 @@ static int usage(const char *progname) {
   return 1;
 }
 
-std::string IMAGE_PATH = "/hologram/utils/images/";
-
 std::map<const void *, struct ImageParams> GetFileList()
 {
   std::map<const void *, struct ImageParams> new_list;
@@ -778,7 +793,7 @@ std::map<const void *, struct ImageParams> GetFileList()
   return new_list;
 }
 
-std::map< std::string, std::vector<std::string> > GetFileList2()
+static std::map< std::string, std::vector<std::string> > GetFileList2()
 {
   std::map< std::string, std::vector<std::string> > new_list;
 
