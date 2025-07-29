@@ -2,6 +2,8 @@ led-image-viewer
 video-viewer
 text-scroller
 hologram-viewer
+hologram-viewer2
+image-to-rgb
 uart-test
 images/*
 !images/Idle

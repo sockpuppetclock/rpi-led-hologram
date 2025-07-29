@@ -413,11 +413,11 @@ void* zmq_loop (void* s)
       std::cout << "update : " << cmd << std::endl;
     }
 
-    if (cmd[0] == 0x01 )
-    {
-        // command byte: refresh images
-        reinitImages();
-    }
+    // if (cmd[0] == 0x01 )
+    // {
+    //     // command byte: refresh images
+    //     reinitImages();
+    // }
   //   else if (cmd[0] == "\x02")
   //   {
   //     // command byte: change animation state
