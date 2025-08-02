@@ -152,7 +152,7 @@ int main(int argc, char *argv[]) {
       case 's':
         arg_loopstart = atoi(optarg);
       default:
-        fprintf(stderr, "usage: %s -i <input folder> -o <output folder>", argv[0]);
+        fprintf(stderr, "usage: %s -i <input folder> -o <output filename>", argv[0]);
         return 1;
         break;
     }
@@ -164,9 +164,9 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Input path \"%s\" does not exist\n", folderpath.c_str());
     return 1;
   }
-  if( !fs::exists(outpath) )
+  if( fs::exists(outpath) )
   {
-    fprintf(stderr, "Output path \"%s\" does not exist\n", folderpath.c_str());
+    fprintf(stderr, "Output path \"%s\" already exists\n", folderpath.c_str());
     return 1;
   }
   if( !fs::is_directory(folderpath))
@@ -212,8 +212,8 @@ int main(int argc, char *argv[]) {
   header.frameCount = frames;
   header.loopStart = arg_loopstart;
 
-  outpath.append(anim_name);
-  outpath.append(".anim");
+  // outpath.append(anim_name);
+  // outpath.append(".anim");
 
   std::cout << "WRITING TO " << outpath << std::endl;
 

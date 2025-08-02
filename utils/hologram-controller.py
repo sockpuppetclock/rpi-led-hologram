@@ -31,4 +31,4 @@ while True:
     socket.send_string(cmd)
     last_cmd = cmd
   message = socket.recv()
-  print(f"< {message}")
+  print(f"< {str(message)}")
