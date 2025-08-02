@@ -135,6 +135,7 @@ struct Anim
 static Anim *active_anim;
 static std::string *next_anim_name, *active_anim_name;
 static volatile bool do_change_anim = false; // flag to switch anim
+static volatile bool do_next_frame = false; // flag to switch anim
 static uint32_t d_us = 0;
 
 static void InterruptHandler(int signo) {
@@ -213,7 +214,7 @@ static uint32_t rotation_current_angle(void) {
         }
         rotation_history[current] = elapsed;
         rotation_period = median_period();
-        std::cout << rotation_period << std::endl;
+        // std::cout << rotation_period << std::endl;
 
         rotation_delta = ROTATION_FULL / rotation_period;
         // if (rotation_lock) {
@@ -283,8 +284,6 @@ void ReadAnimFile(fs::path filepath, Anim &a)
         }
       }
 
-      std::cout << "Slice #" << k << std::endl;
-
       out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
     }
 
@@ -329,18 +328,25 @@ void* zmq_loop (void* s)
     // receive a request from client
     socket->recv(request, zmq::recv_flags::none);
     std::string r = request.to_string();
-    std::cout << "Received " << r << std::endl;
+    std::cout << "REQ > " << r << std::endl;
 
     if( r[0] == '.' )
     {
       if( r == ".l" )
       {
-        rot_off--;
+        rot_off-=1;
       }
       if( r == ".r" )
       {
-        rot_off++;
+        rot_off+=1;
       }
+      if( r == ".n")
+        do_next_frame = true;
+    }
+    else
+    {
+      next_anim_name = &r;
+      do_change_anim = true;
     }
     
     // send the reply to the client
@@ -414,6 +420,8 @@ int main(int argc, char *argv[])
   active_anim = &AnimList[startname];
   active_anim_name = &startname;
 
+  tmillis_t last_time = GetTimeInMillis();
+
   std::cout << "Display begin" << std::endl;
   do {
     uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
@@ -436,6 +444,16 @@ int main(int argc, char *argv[])
     {
       SwitchAnim(AnimList);
       do_change_anim = false;
+    }
+
+    if( GetTimeInMillis() - last_time > 100 )
+    // if(do_next_frame)
+    {
+      last_time = GetTimeInMillis();
+      active_anim->frame++;
+      if(active_anim->frame >= active_anim->frameCount)
+        active_anim->frame = active_anim->loopStart;
+      // do_next_frame = false;
     }
 
     rgb_matrix::StreamReader reader(&active_anim->sequence.at(active_anim->frame).slices[i]);
