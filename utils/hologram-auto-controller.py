@@ -28,9 +28,9 @@ context = zmq.Context()
 socket = context.socket(zmq.REQ)
 
 ip = ""
-# with open("ip.txt", "r+") as f:
-#    lines = f.readlines()
-#    ip = lines[0].strip()
+with open("ip.txt", "r+") as f:
+   lines = f.readlines()
+   ip = lines[0].strip()
 if len(sys.argv) > 1:
   ip = sys.argv[1]
 if len(ip) < 2:
@@ -43,6 +43,7 @@ socket.connect(ip)
 last_cmd = ""
 last_state = ""
 last_mtime = 0.0
+last_mtime_ip = 0
 state = ""
 period = 33
 
@@ -62,9 +63,27 @@ def DetectSwipe():
   # if ret:
       # SendSwipe(ret)
 
-def CheckForState(filename="./state_queue.txt"):
+def CheckForState(filename="./state_queue.txt",filename_ip="./ip.txt"):
   global last_mtime
+  global last_mtime_ip
+  global socket
   try:
+    current_mtime = os.path.getmtime(filename_ip)
+    if current_mtime != last_mtime_ip:
+      print(f'{filename_ip} was updated at {current_mtime}')
+      last_mtime_ip = current_mtime
+      with open("ip.txt", "r+") as f:
+        lines = f.readlines()
+        ip = lines[0].strip()
+        if len(ip) < 2 and ip != None:
+          ip = "tcp://localhost:5555"
+        else:
+          ip = "tcp://" + ip + ":5555"
+        print(f"Connecting to {ip}")
+        socket.connect(ip)
+  except FileNotFoundError:
+    print(f"File {filename_ip} not found.")
+  try:    
     current_mtime = os.path.getmtime(filename)
     if current_mtime != last_mtime:
       print(f'{filename} was updated at {current_mtime}')
@@ -100,16 +119,21 @@ while True:
   #   socket.send_string(cmd)
   #   last_cmd = cmd
   try:
+    # check swipe
     DetectSwipe()
+
+    # check state
     period = period - 1
     if(period <= 0):
-      period = 33
+      period = 33 # 3 Hz
       state = CheckForState()
       if state != last_state and state != None:
         print(f"sending {state}")
         socket.send_string(str(state))
         print(socket.recv())
         last_state = state
+    
+    # 100Hz
     time.sleep(0.01)
   except KeyboardInterrupt:
      exit(0)
