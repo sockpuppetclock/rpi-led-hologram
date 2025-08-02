@@ -1,6 +1,6 @@
 CXXFLAGS=-O3 -W -Wall -Wextra -Wno-unused-parameter -D_FILE_OFFSET_BITS=64
-OBJECTS=led-image-viewer.o text-scroller.o hologram-viewer.o hologram-viewer2.o zmq-test.o image-to-rgb.o
-BINARIES=led-image-viewer text-scroller hologram-viewer hologram-viewer2 zmq-test image-to-rgb
+OBJECTS=led-image-viewer.o text-scroller.o hologram-viewer.o image-to-rgb.o
+BINARIES=led-image-viewer text-scroller hologram-viewer image-to-rgb
 
 OPTIONAL_OBJECTS=video-viewer.o
 OPTIONAL_BINARIES=video-viewer
@@ -34,14 +34,8 @@ text-scroller: text-scroller.o $(RGB_LIBRARY)
 hologram-viewer: hologram-viewer.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) hologram-viewer.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
 
-hologram-viewer2: hologram-viewer2.o $(RGB_LIBRARY)
-	$(CXX) $(CXXFLAGS) hologram-viewer2.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
-
 image-to-rgb: image-to-rgb.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) image-to-rgb.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
-
-zmq-test: zmq-test.o $(RGB_LIBRARY)
-	$(CXX) $(CXXFLAGS) zmq-test.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
 
 led-image-viewer: led-image-viewer.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) led-image-viewer.o -o $@ $(LDFLAGS) $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
@@ -56,9 +50,6 @@ led-image-viewer.o : led-image-viewer.cc
 	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) $(MAGICK_CXXFLAGS) -c -o $@ $<
 
 hologram-viewer.o : hologram-viewer.cc
-	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) $(MAGICK_CXXFLAGS) -c -o $@ $<
-
-hologram-viewer2.o : hologram-viewer2.cc
 	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) $(MAGICK_CXXFLAGS) -c -o $@ $<
 
 image-to-rgb.o : image-to-rgb.cc

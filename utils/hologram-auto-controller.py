@@ -1,24 +1,24 @@
 #!/usr/bin/python3
 
-import random
-import serial
+# Sends zeromq strings to LED driver zmq server
+# Reads touch sensor left/right GPIO
+# IP address of LED driver is read from ./ip.txt and can update while running
+# Sets animation state read from ./state_queue.txt while running
+# For manual control use ./hologram-controller.py
+# For zeromq commands see ./hologram-viewer.cc
+
 import os
-import re
 import time
-import subprocess
-import signal
 import zmq
-import serial
 import time
 import os
 import gpiod
-import fcntl
-import sys
-#start_time = time.time()
+
+# GPIO PIN ASSIGNMENTS
 pin_ri = 6
 pin_le = 13
-chip = gpiod.Chip('gpiochip4')
 
+chip = gpiod.Chip('gpiochip4')
 line_ri = chip.get_line(pin_ri)
 line_le = chip.get_line(pin_le)
 line_ri.request(consumer="input", type=gpiod.LINE_REQ_DIR_IN)
@@ -31,8 +31,8 @@ ip = ""
 with open("ip.txt", "r+") as f:
    lines = f.readlines()
    ip = lines[0].strip()
-if len(sys.argv) > 1:
-  ip = sys.argv[1]
+# if len(sys.argv) > 1:
+#   ip = sys.argv[1]
 if len(ip) < 2:
   ip = "tcp://localhost:5555"
 else:

@@ -1,3 +1,21 @@
+Holographic Display
+==================================================
+This fork adds LED controller scripts for use with a 64x64 HUB75 LED matrix as a volumetric display.
+ * `startup.sh` (starts holographic-viewer, useful if set to start after boot)
+ * `utils/holographic-viewer.cc` (main LED driving script)
+ * `utils/holographic-controller.py` & `utils/holographic-auto-controller.py` (control display via zeromq)
+ * `utils/image-to-rgb.cc` (script to create .anim files from 64x64 images for holographic-viewer)
+
+ ```bash
+apt install make cmake g++ graphicsmagick-libmagick-dev-compat cppzmq-dev python3-zmq
+```
+
+Build before running:
+ ```bash
+ make -C utils
+ make -C examples-api-use
+ ```
+
 Controlling RGB LED display with Raspberry Pi GPIO
 ==================================================
 

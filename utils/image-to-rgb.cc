@@ -1,11 +1,14 @@
-// png -> binary (.frame) of r,g,b;r,g,b;r,g,b;...
-// 
-// CLOCKWISE
+/* * png -> binary (.anim) of r,g,b;r,g,b;r,g,b;...
+* CLOCKWISE
 
-// constructs a contiguous series of unsigned char rgb data
-// per slice > per row in slice > per column in row > red, green, blue
+* constructs a contiguous series of unsigned char rgb data
+* per slice > per row in slice > per column in row > red, green, blue
+* slices should be placed alphabetically in a folder
 
-// $ sudo apt-get install libgraphicsmagick++-dev libwebp-dev
+* $ sudo apt-get install libgraphicsmagick++-dev libwebp-dev
+
+* usage: ./image-to-rgb -d <input folder> -o <output file> [-s <starting slice>]
+*/ 
 
 #include <iostream>
 #include <fstream>

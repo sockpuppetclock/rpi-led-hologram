@@ -1,12 +1,5 @@
 #!/usr/bin/python3
 
-import random
-import serial
-import os
-import re
-import time
-import subprocess
-import signal
 import zmq
 
 ip = input("Enter Hologram IP ADDRESS (none for localhost) > ")
