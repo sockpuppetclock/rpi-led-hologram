@@ -1,0 +1,25 @@
+Designator,Val, ,Mid X,Mid Y,Rotation,Layer
+C1,100n,C_0805_2012Metric,106.172,-57.912,90,top
+C2,100n,C_0805_2012Metric,123.952,-57.912,90,top
+C3,100n,C_0805_2012Metric,141.732,-57.912,90,top
+C5,22u,CP_Radial_D6.3mm_P2.50mm,92.71,-42.799,90,top
+C6,22u,C_1206_3216Metric,87.376,-41.783,90,top
+FID1,BottomLeft,Fiducial_1mm_Dia_2.54mm_Outer_CopperTop,86,-70,0,top
+FID2,TopRight,Fiducial_1mm_Dia_2.54mm_Outer_CopperTop,161.7,-38,0,top
+P1,CONN_02X20,Pin_Header_Straight_2x20,107.95,-43.18,90,top
+P2,+5V,Pin_Header_Straight_1x01,87.376,-46.99,90,top
+P3,RxD,Pin_Header_Straight_1x01,119.38,-45.847,180,top
+P4,GND,Pin_Header_Straight_1x01,87.376,-50.8,90,top
+P5,GND,Pin_Header_Straight_1x01,110.744,-45.847,180,top
+P6,CONN_01X02,Pin_Header_Straight_1x02,86.36,-54.102,90,top
+P7,CONN_02X01,Pin_Header_Straight_1x02,86.36,-56.642,90,top
+P8,CONN_01X02,Pin_Header_Straight_1x02,86.36,-59.182,90,top
+P20,CONN_01X01,1pin,103.08,-41.91,0,top
+P21,CONN_01X01,1pin,161.08,-41.91,0,top
+Panel-1,CONN_02X08,IDC-Header_2x08_P2.54mm_Vertical,88.9,-67.056,90,top
+Panel-2,CONN_02X08,IDC-Header_2x08_P2.54mm_Vertical,116.84,-67.056,90,top
+R1,10k,R_0805_2012Metric,105.664,-46.736,0,top
+REF**,Symbol_OSHW-Logo_SilkScreen,Symbol_OSHW-Logo_SilkScreen,98.4,-42.8,0,top
+U1,74HCT245,SOIC-20W_7.5x12.8mm_P1.27mm,97.79,-54.356,-90,top
+U2,74HCT245,SOIC-20W_7.5x12.8mm_P1.27mm,115.57,-54.356,-90,top
+U3,74HCT245,SOIC-20W_7.5x12.8mm_P1.27mm,133.35,-54.356,-90,top

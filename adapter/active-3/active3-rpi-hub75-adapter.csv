@@ -1,0 +1,13 @@
+Comment,Designator,Footprint,LCSC
+"100n","C1,C2,C3","Capacitor_SMD:C_0805_2012Metric",""
+"22u","C5","Capacitor_THT:CP_Radial_D6.3mm_P2.50mm",""
+"22u","C6","Capacitor_SMD:C_1206_3216Metric",""
+"CONN_02X20","P1","Pin_Headers:Pin_Header_Straight_2x20",""
+"+5V","P2","Pin_Headers:Pin_Header_Straight_1x01",""
+"RxD","P3","Pin_Headers:Pin_Header_Straight_1x01",""
+"GND","P4,P5","Pin_Headers:Pin_Header_Straight_1x01",""
+"CONN_01X02","P6,P8","Pin_Headers:Pin_Header_Straight_1x02",""
+"CONN_02X01","P7","Pin_Headers:Pin_Header_Straight_1x02",""
+"CONN_02X08","Panel-1,Panel-2","Connector_IDC:IDC-Header_2x08_P2.54mm_Vertical",""
+"10k","R1","Resistor_SMD:R_0805_2012Metric",""
+"74HCT245","U1,U2,U3","Package_SO:SOIC-20W_7.5x12.8mm_P1.27mm",""
