@@ -188,29 +188,6 @@ int main(int argc, char *argv[]) {
   int count = 0;
 
   std::cout << frames << " frames" << std::endl;
-  
-  for(auto it = list.begin(); it != list.end() && count != (frames * SLICE_COUNT); ++it)
-  {
-    size_t frame_num = count / (int)SLICE_COUNT;
-    if( anim.size() < frame_num + 1) // should only need +1 frame every 100 slices
-    {
-      anim.emplace_back(SimpleFrame());
-    }
-
-    const char* filename = (const char*)it->c_str();
-    Magick::Image img;
-    std::string err;
-
-    if( LoadImage( filename, &img, &err) )
-    {
-      ImageToSlice( &img, &anim[frame_num].slices[count % SLICE_COUNT] );
-    }
-    else
-    {
-      fprintf(stderr, "%s error: %s", filename, err.c_str());
-    }
-    count++;
-  }
 
   AnimHeader header;
   header.frameCount = frames;
@@ -226,11 +203,48 @@ int main(int argc, char *argv[]) {
 
   std::ofstream f(outpath, std::ios::out | std::ios::binary | std::ios::app);
   f.write(reinterpret_cast<const char*>(&header), sizeof(AnimHeader));
-  for( auto it = anim.begin(); it != anim.end(); ++it )
+  
+  SimpleFrame *s;
+
+  for(auto it = list.begin(); it != list.end() && count != (frames * SLICE_COUNT); ++it)
   {
-    SimpleFrame *s = &(*it);
-    f.write( reinterpret_cast<const char*>(s), sizeof(SimpleFrame) );
+    // size_t frame_num = count / (int)SLICE_COUNT;
+    // if( anim.size() < frame_num + 1) // should only need +1 frame every 100 slices
+    // {
+    //   anim.emplace_back(SimpleFrame());
+    // }
+
+    if ( count % SLICE_COUNT == 0 )
+    {
+      if(count > 0)
+      {
+        f.write( reinterpret_cast<const char*>(s), sizeof(SimpleFrame) );
+        delete s;
+      }
+      s = new SimpleFrame();
+    }
+
+    const char* filename = (const char*)it->c_str();
+    Magick::Image img;
+    std::string err;
+
+    if( LoadImage( filename, &img, &err) )
+    {
+      // ImageToSlice( &img, &anim[frame_num].slices[count % SLICE_COUNT] );
+      ImageToSlice( &img, s[count % SLICE_COUNT] );
+    }
+    else
+    {
+      fprintf(stderr, "%s error: %s", filename, err.c_str());
+    }
+    count++;
   }
+
+  // for( auto it = anim.begin(); it != anim.end(); ++it )
+  // {
+  //   SimpleFrame *s = &(*it);
+  //   f.write( reinterpret_cast<const char*>(s), sizeof(SimpleFrame) );
+  // }
   f.close();
 
   return 0;

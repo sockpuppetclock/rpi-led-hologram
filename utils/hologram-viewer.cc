@@ -323,7 +323,11 @@ int RetrieveAnimList(std::map< std::string, Anim > &new_list)
 void SwitchAnim(std::map< std::string, Anim > &AnimList)
 {
 
-  if( AnimList.count(*next_anim_name) == 0 ) return;
+  if( AnimList.count(*next_anim_name) == 0 )
+  {
+    RetrieveAnimList(AnimList); // reload anim list
+    if( AnimList.count(*next_anim_name) == 0 ) return; // if still nothing
+  }
   // active_anim->frame = 0;
   active_anim = &AnimList[*next_anim_name];
   active_anim->frame = 0;
