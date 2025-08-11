@@ -13,6 +13,9 @@ import zmq
 import time
 import os
 import gpiod
+import sys
+
+STATE_FILE = "/home/hwteam/SD25App/animation_state.txt"
 
 # GPIO PIN ASSIGNMENTS
 pin_ri = 6
@@ -45,25 +48,42 @@ last_state = ""
 last_mtime = 0.0
 last_mtime_ip = 0
 state = ""
+# time_now = 0
+# time_then = 0
 period = 33
 
+last_swipe_ri = 0
+last_swipe_le = 0
+last_swipe_act = -1
+
 def DetectSwipe():
+  global last_swipe_ri, last_swipe_le, last_swipe_act
   # print(f"{line_le.get_value()}{line_ri.get_value()}")
   # ret = ''
-  if line_ri.get_value() == 1:
-    print("swipe right")
-    socket.send_string(".r")
-    print(socket.recv())
+  r = line_ri.get_value()
+  l = line_le.get_value()
+  if r == 1 and last_swipe_ri != 1:
+    if last_swipe_act == 2:
+      print("swipe right")
+      socket.send_string(".r")
+      print(socket.recv())
+    else:
+      last_swipe_act = 2
     # ret = ret + 'R'
-  if line_le.get_value() == 1:
-    print("swipe left")
-    socket.send_string(".l")
-    print(socket.recv())
+  if l == 1 and last_swipe_le != 1:
+    if last_swipe_act == 1:
+      print("swipe left")
+      socket.send_string(".l")
+      print(socket.recv())
+    else:
+      last_swipe_act = 1
     # ret = ret + 'L'
   # if ret:
       # SendSwipe(ret)
+  last_swipe_ri = r
+  last_swipe_le = l
 
-def CheckForState(filename="./state_queue.txt",filename_ip="./ip.txt"):
+def CheckForState(filename=STATE_FILE,filename_ip="./ip.txt"):
   global last_mtime
   global last_mtime_ip
   global socket
@@ -121,11 +141,13 @@ while True:
   try:
     # check swipe
     DetectSwipe()
-
     # check state
+    # time_now = time.time_ns()
     period = period - 1
-    if(period <= 0):
-      period = 33 # 3 Hz
+    # if(time_now - time_then > 1e8 ):
+    if period == 0:
+      period = 33
+      # time_then = time_now
       state = CheckForState()
       if state != last_state and state != None:
         print(f"sending {state}")
