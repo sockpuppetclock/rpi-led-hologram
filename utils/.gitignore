@@ -3,7 +3,7 @@ video-viewer
 text-scroller
 hologram-viewer
 hologram-viewer2
-image-to-rgb
+img2anim
 uart-test
 images/*
 anims/*

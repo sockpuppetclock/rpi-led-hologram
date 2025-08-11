@@ -1,6 +1,6 @@
 CXXFLAGS=-O3 -W -Wall -Wextra -Wno-unused-parameter -D_FILE_OFFSET_BITS=64
-OBJECTS=led-image-viewer.o text-scroller.o hologram-viewer.o image-to-rgb.o
-BINARIES=led-image-viewer text-scroller hologram-viewer image-to-rgb
+OBJECTS=led-image-viewer.o text-scroller.o hologram-viewer.o img2anim.o
+BINARIES=led-image-viewer text-scroller hologram-viewer img2anim
 
 OPTIONAL_OBJECTS=video-viewer.o
 OPTIONAL_BINARIES=video-viewer
@@ -34,8 +34,8 @@ text-scroller: text-scroller.o $(RGB_LIBRARY)
 hologram-viewer: hologram-viewer.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) hologram-viewer.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
 
-image-to-rgb: image-to-rgb.o $(RGB_LIBRARY)
-	$(CXX) $(CXXFLAGS) image-to-rgb.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
+img2anim: img2anim.o $(RGB_LIBRARY)
+	$(CXX) $(CXXFLAGS) img2anim.o -o $@ $(LDFLAGS) ${HOLO_LDFLAGS} $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
 
 led-image-viewer: led-image-viewer.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) led-image-viewer.o -o $@ $(LDFLAGS) $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)
@@ -52,7 +52,7 @@ led-image-viewer.o : led-image-viewer.cc
 hologram-viewer.o : hologram-viewer.cc
 	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) $(MAGICK_CXXFLAGS) -c -o $@ $<
 
-image-to-rgb.o : image-to-rgb.cc
+img2anim.o : img2anim.cc
 	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) $(MAGICK_CXXFLAGS) -c -o $@ $<
 
 clean:

@@ -231,7 +231,7 @@ int main(int argc, char *argv[]) {
     if( LoadImage( filename, &img, &err) )
     {
       // ImageToSlice( &img, &anim[frame_num].slices[count % SLICE_COUNT] );
-      ImageToSlice( &img, s[count % SLICE_COUNT] );
+      ImageToSlice( &img, &s->slices[count % SLICE_COUNT] );
     }
     else
     {
