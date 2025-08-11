@@ -6,4 +6,5 @@ hologram-viewer2
 image-to-rgb
 uart-test
 images/*
-!images/Idle
+anims/*
+!anims/idle.anim

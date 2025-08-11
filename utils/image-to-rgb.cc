@@ -141,7 +141,7 @@ int main(int argc, char *argv[]) {
 
   std::string folderpath;
   std::string outpath;
-  int arg_loopstart = 0;
+  int arg_loopstart = -1;
 
   int opt;
   while ((opt = getopt(argc, argv, "i:o:s:")) != -1) {
@@ -154,8 +154,9 @@ int main(int argc, char *argv[]) {
         break;
       case 's':
         arg_loopstart = atoi(optarg);
+        break;
       default:
-        fprintf(stderr, "usage: %s -i <input folder> -o <output filename>", argv[0]);
+        fprintf(stderr, "usage: %s -i <input folder> -o <output filename> [-s <loop frame>]\n", argv[0]);
         return 1;
         break;
     }
@@ -213,7 +214,10 @@ int main(int argc, char *argv[]) {
 
   AnimHeader header;
   header.frameCount = frames;
-  header.loopStart = arg_loopstart;
+  if( arg_loopstart == -1 )
+    header.loopStart = frames - 1;
+  else
+    header.loopStart = arg_loopstart;
 
   // outpath.append(anim_name);
   // outpath.append(".anim");

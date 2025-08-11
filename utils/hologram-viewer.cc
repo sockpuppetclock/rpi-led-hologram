@@ -79,7 +79,7 @@ static rgb_matrix::RGBMatrix *matrix;
 static rgb_matrix::FrameCanvas *offscreen_canvas;
 static rgb_matrix::FrameCanvas *reader_canvas;
 
-static std::string IMAGE_PATH = "/rpi-led-hologram/utils/images/";
+static std::string IMAGE_PATH = "/rpi-led-hologram/utils/anims/";
 
 namespace fs = std::filesystem;
 
@@ -163,6 +163,8 @@ static int32_t rotation_delta = 256;
 static int sync_level = 1;
 static uint32_t tick_prev = 0;
 static uint32_t rotation_history[8];
+
+static int32_t rot_inc = 1; 
 
 #define ROTATION_PRECISION 30
 #define ROTATION_FULL (1<<ROTATION_PRECISION)
@@ -322,8 +324,10 @@ void SwitchAnim(std::map< std::string, Anim > &AnimList)
 {
 
   if( AnimList.count(*next_anim_name) == 0 ) return;
-
+  // active_anim->frame = 0;
   active_anim = &AnimList[*next_anim_name];
+  active_anim->frame = 0;
+  active_anim_name = next_anim_name;
 }
 
 void* zmq_loop (void* s)
@@ -345,11 +349,11 @@ void* zmq_loop (void* s)
     {
       if( r == ".l" )
       {
-        rot_off-=1;
+        rot_off -= rot_inc;
       }
       if( r == ".r" )
       {
-        rot_off+=1;
+        rot_off += rot_inc;
       }
       if( r == ".n")
         do_next_frame = true;
@@ -392,6 +396,17 @@ int main(int argc, char *argv[])
   matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL)
     return 1;
+
+  int opt;
+  while ((opt = getopt(argc, argv, "r:")) != -1) {
+    switch (opt) {
+      case 'r': // directory
+        rot_inc = atoi(optarg);
+        break;
+      default:
+        break;
+    }
+  }
   
   printf( "REQUEST INPUTS: %lu\n", matrix->RequestInputs(1<<SPIN_SYNC) );
 
@@ -427,7 +442,7 @@ int main(int argc, char *argv[])
   std::cout << "Starting ZMQ thread..." << std::endl;
   pthread_create(&zmq_thread, NULL, zmq_loop, &socket);
 
-  std::string startname = "Idle";
+  std::string startname = "idle";
   active_anim = &AnimList[startname];
   active_anim_name = &startname;
 
@@ -444,8 +459,18 @@ int main(int argc, char *argv[])
 
     if( rot_off != 0 )
     {
-      i += rot_off;
-      rot_off = 0;
+      if( rot_off > 0 )
+      {
+        i++;
+        rot_off--;
+      }
+      else // rot_off < 0
+      {
+        i--;
+        rot_off++;
+      }
+      // i += rot_off;
+      // rot_off = 0;
     }
 
     if( i >= SLICE_COUNT ) i = 0;
@@ -463,7 +488,7 @@ int main(int argc, char *argv[])
       last_time = GetTimeInMillis();
       active_anim->frame++;
       if(active_anim->frame >= active_anim->frameCount)
-        active_anim->frame = active_anim->loopStart;
+        active_anim->frame = active_anim->loopStart >= active_anim->frameCount ? active_anim->frameCount - 1 : active_anim->loopStart;
       // do_next_frame = false;
     }
 
