@@ -137,7 +137,10 @@ struct AnimHeader
 
 struct Anim
 {
-  std::vector<MemFrame> sequence;
+  // std::vector<MemFrame> sequence;
+  std::ifstream stream;
+  std::streampos headHead;
+  std::streampos loopHead;
   uint32_t frame = 0; // current frame
   uint32_t frameCount = 0;
   uint32_t loopStart = 0; // end anim -> loop/idle frame
@@ -271,37 +274,78 @@ static uint32_t rotation_current_angle(void) {
 
 void ReadAnimFile(fs::path filepath, Anim &a)
 {
-  std::ifstream f(filepath, std::ios::in | std::ios::binary );
+  a.stream.open(filepath, std::ios::in | std::ios::binary );
 
   AnimHeader h;
-  f.read(reinterpret_cast<char*>(&h), sizeof(AnimHeader));
+  a.stream.read(reinterpret_cast<char*>(&h), sizeof(AnimHeader));
+  a.headHead = a.stream.tellg();
   a.frameCount = h.frameCount;
   a.loopStart = h.loopStart;
-
-  // convert SimpleFrame to MemFrame for each frame
-  for(size_t i = 0; i < h.frameCount; i++)
+  if( a.loopStart == a.frame )
   {
-    SimpleFrame frame;
-    MemFrame memf;
-    f.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
+    a.loopHead = a.stream.tellg();
+  }
 
-    // store each slice in stream
-    for(size_t k = 0; k < SLICE_COUNT; k++)
-    {
-      rgb_matrix::StreamWriter out(&memf.slices[k]);
+  // // convert SimpleFrame to MemFrame for each frame
+  // for(size_t i = 0; i < h.frameCount; i++)
+  // {
+  //   SimpleFrame frame;
+  //   MemFrame memf;
+  //   f.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
 
-      for (size_t y = 0; y < SLICE_ROWS; ++y) {
-        for (size_t x = 0; x < SLICE_COLS; ++x) {
-          const Pixel p = frame.slices[k].GetPixel(x, y);
-          reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
-        }
+  //   // store each slice in stream
+  //   for(size_t k = 0; k < SLICE_COUNT; k++)
+  //   {
+  //     rgb_matrix::StreamWriter out(&memf.slices[k]);
+
+  //     for (size_t y = 0; y < SLICE_ROWS; ++y) {
+  //       for (size_t x = 0; x < SLICE_COLS; ++x) {
+  //         const Pixel p = frame.slices[k].GetPixel(x, y);
+  //         reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
+  //       }
+  //     }
+
+  //     out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
+  //   }
+
+  //   a.sequence.push_back(memf);
+  // }
+}
+
+MemFrame GetNextFrame(Anim &a)
+{
+  // convert SimpleFrame to MemFrame for each frame
+  SimpleFrame frame;
+  MemFrame memf;
+  a.frame++;
+  if(a.frame >= a.frameCount)
+  {
+    a.frame = a.loopStart >= a.frameCount ? a.frameCount - 1 : a.loopStart;
+    a.stream.clear();  // clear EOF flag
+    a.stream.seekg(a.loopHead);
+  }
+  a.stream.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
+  if( a.loopStart == a.frame )
+  {
+    a.loopHead = a.stream.tellg();
+  }
+
+  // store each slice in stream
+  for(size_t k = 0; k < SLICE_COUNT; k++)
+  {
+    rgb_matrix::StreamWriter out(&memf.slices[k]);
+
+    for (size_t y = 0; y < SLICE_ROWS; ++y) {
+      for (size_t x = 0; x < SLICE_COLS; ++x) {
+        const Pixel p = frame.slices[k].GetPixel(x, y);
+        reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
       }
-
-      out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
     }
 
-    a.sequence.push_back(memf);
+    out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
   }
+
+  return memf;
 }
 
 int RetrieveAnimList(std::map< std::string, Anim > &new_list)
@@ -452,6 +496,8 @@ int main(int argc, char *argv[])
 
   tmillis_t last_time = GetTimeInMillis();
 
+  std::ifstream *f;
+
   std::cout << "Display begin" << std::endl;
   do {
     uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
@@ -490,9 +536,10 @@ int main(int argc, char *argv[])
     // if(do_next_frame)
     {
       last_time = GetTimeInMillis();
-      active_anim->frame++;
-      if(active_anim->frame >= active_anim->frameCount)
-        active_anim->frame = active_anim->loopStart >= active_anim->frameCount ? active_anim->frameCount - 1 : active_anim->loopStart;
+      GetNextFrame(f, active_anim);
+      // active_anim->frame++;
+      // if(active_anim->frame >= active_anim->frameCount)
+      //   active_anim->frame = active_anim->loopStart >= active_anim->frameCount ? active_anim->frameCount - 1 : active_anim->loopStart;
       // do_next_frame = false;
     }
 

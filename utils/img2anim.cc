@@ -105,7 +105,7 @@ static bool LoadImage(const char *filename,
                       Magick::Image *result,
                       std::string *err )
 {
-  std::cout << filename << std::endl;
+  std::cout << "\e[2K\r" << filename << std::endl;
   try
   {
     result->read(filename);
@@ -142,9 +142,10 @@ int main(int argc, char *argv[]) {
   std::string folderpath;
   std::string outpath;
   int arg_loopstart = -1;
+  int arg_totalframes = -1;
 
   int opt;
-  while ((opt = getopt(argc, argv, "i:o:s:")) != -1) {
+  while ((opt = getopt(argc, argv, "i:o:s:f:")) != -1) {
     switch (opt) {
       case 'i': // directory
         folderpath = optarg;
@@ -155,8 +156,11 @@ int main(int argc, char *argv[]) {
       case 's':
         arg_loopstart = atoi(optarg);
         break;
+      case 'f':
+        arg_totalframes = atoi(optarg);
+        break;
       default:
-        fprintf(stderr, "usage: %s -i <input folder> -o <output filename> [-s <loop frame>]\n", argv[0]);
+        fprintf(stderr, "usage: %s -i <input folder> -o <output filename> [-s <loop frame> | -f <total frames>]\n", argv[0]);
         return 1;
         break;
     }
@@ -187,6 +191,9 @@ int main(int argc, char *argv[]) {
   int frames = (int)list.size() / (int)SLICE_COUNT; // should truncate
   int count = 0;
 
+  if( arg_totalframes != -1 )
+    frames = arg_totalframes < frames ? arg_totalframes : frames;
+
   std::cout << frames << " frames" << std::endl;
 
   AnimHeader header;
@@ -214,16 +221,6 @@ int main(int argc, char *argv[]) {
     //   anim.emplace_back(SimpleFrame());
     // }
 
-    if ( count % SLICE_COUNT == 0 )
-    {
-      if(count > 0)
-      {
-        f.write( reinterpret_cast<const char*>(s), sizeof(SimpleFrame) );
-        delete s;
-      }
-      s = new SimpleFrame();
-    }
-
     const char* filename = (const char*)it->c_str();
     Magick::Image img;
     std::string err;
@@ -238,6 +235,16 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "%s error: %s", filename, err.c_str());
     }
     count++;
+
+    if ( count % SLICE_COUNT == 0 )
+    {
+      if(count > 0)
+      {
+        f.write( reinterpret_cast<const char*>(s), sizeof(SimpleFrame) );
+        delete s;
+      }
+      s = new SimpleFrame();
+    }
   }
 
   // for( auto it = anim.begin(); it != anim.end(); ++it )
