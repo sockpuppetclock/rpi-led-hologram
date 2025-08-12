@@ -18,6 +18,7 @@
 #include "pixel-mapper.h"
 #include "content-streamer.h"
 #include "gpio.h"
+#include "hologram-viewer.h"
 
 #include <fcntl.h>
 #include <math.h>
@@ -29,6 +30,8 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <thread>
+#include <atomic>
 
 #include <iostream>
 #include <fstream>
@@ -50,7 +53,6 @@ using rgb_matrix::RGBMatrix;
 using rgb_matrix::StreamReader;
 
 #define SPIN_SYNC 2 // gpio
-#define UART_BUF_SIZE 8192 // 1024 should be enough but not by much
 
 #define SLICE_ROWS 64
 #define SLICE_COLS 64
@@ -59,20 +61,13 @@ using rgb_matrix::StreamReader;
 #define SLICE_WRAP(slice) ((slice) % (SLICE_COUNT))
 
 #define FRAME_TIME 100 // duration of each frame in milliseconds
+#define QUEUE_SLOTS 30 // max frames to queue ahead
 
 /* GLOBALS */
 
 typedef int64_t tmillis_t;
-static const tmillis_t distant_future = (1LL<<40); // that is a while.
-volatile uint32_t *timer_uS; // microsecond timer
 
-// static char* anim_state = NULL;
-// static int serial_fd;
-// static uint8_t read_buf[UART_BUF_SIZE]; // rolling UART buffer
-// static volatile size_t uart_buf_head = 0; // length of stored buffer
-// static volatile bool read_busy = 0; // if process_uart is running
-
-static pthread_t zmq_thread = 0;
+static std::thread zmq_thread;
 volatile bool interrupt_received = false;
 
 static rgb_matrix::RGBMatrix *matrix;
@@ -83,67 +78,57 @@ static std::string IMAGE_PATH = "/rpi-led-hologram/utils/anims/";
 
 namespace fs = std::filesystem;
 
-/* STRUCTS */
+// rolling FIFO queue
+template<typename T>
+class SPSCQueue {
+public:
+    SPSCQueue(size_t capacity) : cap_(capacity), buf_(capacity) {
+        head_.store(0, std::memory_order_relaxed);
+        tail_.store(0, std::memory_order_relaxed);
+    }
 
-// used in StreamIO construction
-struct Pixel
-{
-  Pixel() : r(0), g(0), b(0) {}
-  unsigned char r;
-  unsigned char g;
-  unsigned char b;
-  Pixel(unsigned char rn, unsigned char gn, unsigned char bn)
-  {
-    r = rn;
-    g = gn;
-    b = bn;
-  }
+    // non-blocking push, returns false if full
+    bool push(const T &v) {
+        size_t tail = tail_.load(std::memory_order_relaxed);
+        size_t next = (tail + 1) % cap_;
+        if (next == head_.load(std::memory_order_acquire)) return false; // full
+        buf_[tail] = v;
+        tail_.store(next, std::memory_order_release);
+        return true;
+    }
+
+    // non-blocking pop, returns false if empty
+    bool pop(T &out) {
+        size_t head = head_.load(std::memory_order_relaxed);
+        if (head == tail_.load(std::memory_order_acquire)) return false; // empty
+        out = buf_[head];
+        head_.store((head + 1) % cap_, std::memory_order_release);
+        return true;
+    }
+
+    bool isfull()
+    {
+      size_t tail = tail_.load(std::memory_order_relaxed);
+      size_t next = (tail + 1) % cap_;
+      if (next == head_.load(std::memory_order_acquire)) return true;
+      return false;
+    }
+
+    // clean out queue immediately
+    void clear() {
+      auto t = tail_.load(std::memory_order_acquire);
+      head_.store(t, std::memory_order_release);
+    }
+
+private:
+    const size_t cap_;
+    std::vector<T> buf_;
+    std::atomic<size_t> head_, tail_;
 };
 
-// used in StreamIO construction
-struct Slice
-{
-  Pixel pixels[SLICE_ROWS * SLICE_COLS]; //1D collapsed row*COLUMNS + col
-  const Pixel GetPixel(size_t x, size_t y)
-  {
-    return pixels[ y * SLICE_COLS + x ];
-  }
-  void SetPixel(size_t x, size_t y,
-                unsigned char r,
-                unsigned char g,
-                unsigned char b)
-  {
-    pixels[ y * SLICE_COLS + x ] = Pixel(r,g,b);
-  }
-};
+constexpr static size_t HEADER_SIZE = sizeof(AnimHeader);
+constexpr static size_t FRAME_SIZE = sizeof(SimpleFrame);
 
-struct SimpleFrame
-{
-  Slice slices[SLICE_COUNT];
-};
-
-struct MemFrame
-{
-  rgb_matrix::MemStreamIO slices[SLICE_COUNT];
-};
-
-// .anim file
-struct AnimHeader
-{
-   char magic[9] = "HOLOGRAM"; // to recognize file (8+null)
-   uint32_t frameCount = 0;
-   uint32_t loopStart = 0; // frame to return to after last frame
-};
-
-struct Anim
-{
-  std::vector<MemFrame> sequence;
-  uint32_t frame = 0; // current frame
-  uint32_t frameCount = 0;
-  uint32_t loopStart = 0; // end anim -> loop/idle frame
-};
-
-static Anim *active_anim;
 static std::string *next_anim_name, *active_anim_name;
 static volatile bool do_change_anim = false; // flag to switch anim
 static volatile bool do_next_frame = false; // flag to switch anim
@@ -151,10 +136,6 @@ static uint32_t d_us = 0;
 
 static void InterruptHandler(int signo) {
   interrupt_received = true;
-  if(zmq_thread > 0)
-  {
-    pthread_cancel(zmq_thread);
-  }
 }
 
 static uint32_t sync_prev = 0;
@@ -269,40 +250,91 @@ static uint32_t rotation_current_angle(void) {
   
 */
 
+// create ifstream for .anim and get header data
 void ReadAnimFile(fs::path filepath, Anim &a)
 {
-  std::ifstream f(filepath, std::ios::in | std::ios::binary );
+  a.stream.open(filepath, std::ios::in | std::ios::binary );
 
   AnimHeader h;
-  f.read(reinterpret_cast<char*>(&h), sizeof(AnimHeader));
+  a.stream.read(reinterpret_cast<char*>(&h), HEADER_SIZE);
+  a.headHead = a.stream.tellg();
   a.frameCount = h.frameCount;
-  a.loopStart = h.loopStart;
+  a.loopStart = h.loopStart > h.frameCount ? h.frameCount : h.loopStart;
+  a.loopHead = a.headHead + static_cast<std::streampos>( FRAME_SIZE * a.loopStart );
 
-  // convert SimpleFrame to MemFrame for each frame
-  for(size_t i = 0; i < h.frameCount; i++)
-  {
-    SimpleFrame frame;
-    MemFrame memf;
-    f.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
+  // // convert SimpleFrame to MemFrame for each frame
+  // for(size_t i = 0; i < h.frameCount; i++)
+  // {
+  //   SimpleFrame frame;
+  //   MemFrame memf;
+  //   f.read(reinterpret_cast<char*>(&frame), FRAME_SIZE);
 
-    // store each slice in stream
-    for(size_t k = 0; k < SLICE_COUNT; k++)
-    {
-      rgb_matrix::StreamWriter out(&memf.slices[k]);
+  //   // store each slice in stream
+  //   for(size_t k = 0; k < SLICE_COUNT; k++)
+  //   {
+  //     rgb_matrix::StreamWriter out(&memf.slices[k]);
 
-      for (size_t y = 0; y < SLICE_ROWS; ++y) {
-        for (size_t x = 0; x < SLICE_COLS; ++x) {
-          const Pixel p = frame.slices[k].GetPixel(x, y);
-          reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
-        }
-      }
+  //     for (size_t y = 0; y < SLICE_ROWS; ++y) {
+  //       for (size_t x = 0; x < SLICE_COLS; ++x) {
+  //         const Pixel p = frame.slices[k].GetPixel(x, y);
+  //         reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
+  //       }
+  //     }
 
-      out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
-    }
+  //     out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
+  //   }
 
-    a.sequence.push_back(memf);
-  }
+  //   a.sequence.push_back(memf);
+  // }
 }
+
+MemFrame EmptyFrame()
+{
+  MemFrame memf;
+  for(size_t k = 0; k < SLICE_COUNT; k++)
+  {
+    rgb_matrix::StreamWriter out(&memf.slices[k]);
+    for (size_t y = 0; y < SLICE_ROWS; ++y) {
+      for (size_t x = 0; x < SLICE_COLS; ++x) {
+        reader_canvas->SetPixel(x, y, 0, 0, 0);
+      }
+    }
+    out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
+  }
+  return memf;
+}
+
+// MemFrame GetNextFrame(Anim &a)
+// {
+//   // convert SimpleFrame to MemFrame for each frame
+//   SimpleFrame frame;
+//   MemFrame memf;
+//   a.frame++;
+//   if(a.frame >= a.frameCount)
+//   {
+//     a.frame = a.loopStart >= a.frameCount ? a.frameCount - 1 : a.loopStart;
+//     a.stream.clear();  // clear EOF flag
+//     a.stream.seekg(a.loopHead);
+//   }
+//   a.stream.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
+
+//   // store each slice in stream
+//   for(size_t k = 0; k < SLICE_COUNT; k++)
+//   {
+//     rgb_matrix::StreamWriter out(&memf.slices[k]);
+
+//     for (size_t y = 0; y < SLICE_ROWS; ++y) {
+//       for (size_t x = 0; x < SLICE_COLS; ++x) {
+//         const Pixel p = frame.slices[k].GetPixel(x, y);
+//         reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
+//       }
+//     }
+
+//     out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
+//   }
+
+//   return memf;
+// }
 
 int RetrieveAnimList(std::map< std::string, Anim > &new_list)
 {
@@ -312,6 +344,7 @@ int RetrieveAnimList(std::map< std::string, Anim > &new_list)
   {
     if(entry.path().extension().string() == ".anim" )
     {
+      // todo: check if already exists?
       new_list[entry.path().stem()] = Anim();
       ReadAnimFile( entry.path(), new_list[entry.path().stem()] );
       i++;
@@ -320,58 +353,63 @@ int RetrieveAnimList(std::map< std::string, Anim > &new_list)
   return i;
 }
 
-void SwitchAnim(std::map< std::string, Anim > &AnimList)
-{
+// void SwitchAnim(std::map< std::string, Anim > &AnimList)
+// {
 
-  if( AnimList.count(*next_anim_name) == 0 )
-  {
-    RetrieveAnimList(AnimList); // reload anim list
-    if( AnimList.count(*next_anim_name) == 0 ) return; // if still nothing
-  }
-  // active_anim->frame = 0;
-  active_anim = &AnimList[*next_anim_name];
-  active_anim->frame = 0;
-  active_anim_name = next_anim_name;
-}
+//   if( AnimList.count(*next_anim_name) == 0 )
+//   {
+//     RetrieveAnimList(AnimList); // reload anim list
+//     if( AnimList.count(*next_anim_name) == 0 ) return; // if still nothing
+//   }
+//   // active_anim->frame = 0;
+//   active_anim = &AnimList[*next_anim_name];
+//   active_anim->frame = 0;
+//   active_anim_name = next_anim_name;
+// }
 
-void* zmq_loop (void* s)
+void zmq_loop (void* s)
 {
   zmq::socket_t* socket = (zmq::socket_t*)s;
   std::string ok = "OK";
   std::string fail = "FAIL";
+
+  // avoid blocking indefinitely
+  socket->set(zmq::sockopt::rcvtimeo, 300); // 100ms timeout
 
   while(!interrupt_received)
   {
     zmq::message_t request;
     
     // receive a request from client
-    socket->recv(request, zmq::recv_flags::none);
-    std::string r = request.to_string();
-    std::cout << "REQ > " << r << std::endl;
+    if(socket->recv(request, zmq::recv_flags::none))
+    {
+      std::string r = request.to_string();
+      std::cout << "REQ > " << r << std::endl;
 
-    if( r[0] == '.' )
-    {
-      if( r == ".l" )
+      if( r[0] == '.' )
       {
-        rot_off -= rot_inc;
+        if( r == ".l" )
+        {
+          rot_off -= rot_inc;
+        }
+        if( r == ".r" )
+        {
+          rot_off += rot_inc;
+        }
+        if( r == ".n")
+          do_next_frame = true;
       }
-      if( r == ".r" )
+      else
       {
-        rot_off += rot_inc;
+        next_anim_name = &r;
+        do_change_anim = true;
       }
-      if( r == ".n")
-        do_next_frame = true;
+      
+      // send the reply to the client
+      socket->send(zmq::buffer(ok), zmq::send_flags::none);
     }
-    else
-    {
-      next_anim_name = &r;
-      do_change_anim = true;
-    }
-    
-    // send the reply to the client
-    socket->send(zmq::buffer(ok), zmq::send_flags::none);
+    std::this_thread::yield();
   }
-  return s;
 }
 
 int main(int argc, char *argv[])
@@ -444,13 +482,75 @@ int main(int argc, char *argv[])
   // uint16_t slice_angle = 0;
 
   std::cout << "Starting ZMQ thread..." << std::endl;
-  pthread_create(&zmq_thread, NULL, zmq_loop, &socket);
+  zmq_thread = std::thread(zmq_loop, &socket);
+
+  SPSCQueue<MemFrame> readyQueue(QUEUE_SLOTS + 1);
 
   std::string startname = "idle";
-  active_anim = &AnimList[startname];
+  Anim* active_anim(&AnimList[startname]);
   active_anim_name = &startname;
 
   tmillis_t last_time = GetTimeInMillis();
+
+  MemFrame active_frame = EmptyFrame();
+
+  // starts producer thread
+  std::thread producer([&](){
+    while(!interrupt_received)
+    {
+      if(do_change_anim)
+      {
+        if( AnimList.count(*next_anim_name) == 0 )
+        {
+          RetrieveAnimList(AnimList); // reload anim list        
+        }
+        if( AnimList.count(*next_anim_name) != 0 )
+        {
+          active_anim = &AnimList[*next_anim_name];
+          active_anim->frame = 0;
+          active_anim_name = next_anim_name;
+          readyQueue.clear();
+        }
+        do_change_anim = false;
+      }
+
+      if(readyQueue.isfull())
+      {
+        std::this_thread::yield();
+        continue;
+      }
+    
+      // convert SimpleFrame to MemFrame for each frame
+      SimpleFrame data;
+      MemFrame next_frame;
+      active_anim->frame++;
+      if(active_anim->frame >= active_anim->frameCount)
+      {
+        active_anim->frame = active_anim->loopStart >= active_anim->frameCount ? active_anim->frameCount - 1 : active_anim->loopStart;
+        active_anim->stream.clear();  // clear EOF flag
+        active_anim->stream.seekg(active_anim->loopHead);
+      }
+      active_anim->stream.read(reinterpret_cast<char*>(&data), FRAME_SIZE);
+
+      // store each slice in stream
+      for(size_t k = 0; k < SLICE_COUNT; k++)
+      {
+        rgb_matrix::StreamWriter out(&next_frame.slices[k]);
+
+        for (size_t y = 0; y < SLICE_ROWS; ++y) {
+          for (size_t x = 0; x < SLICE_COLS; ++x) {
+            const Pixel p = data.slices[k].GetPixel(x, y);
+            reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
+          }
+        }
+
+        out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
+      }
+
+      readyQueue.push(next_frame);
+      std::this_thread::yield();
+    }
+  });
 
   std::cout << "Display begin" << std::endl;
   do {
@@ -470,7 +570,8 @@ int main(int argc, char *argv[])
       }
       else // rot_off < 0
       {
-        i--;
+        if( i == 0 ) i = SLICE_COUNT - 1;
+        else i--;
         rot_off++;
       }
       // i += rot_off;
@@ -478,29 +579,30 @@ int main(int argc, char *argv[])
     }
 
     if( i >= SLICE_COUNT ) i = 0;
-    if( i < 0 ) i = SLICE_COUNT - 1;
-
-    if(do_change_anim)
-    {
-      SwitchAnim(AnimList);
-      do_change_anim = false;
-    }
 
     if( GetTimeInMillis() - last_time > FRAME_TIME )
-    // if(do_next_frame)
     {
       last_time = GetTimeInMillis();
-      active_anim->frame++;
-      if(active_anim->frame >= active_anim->frameCount)
-        active_anim->frame = active_anim->loopStart >= active_anim->frameCount ? active_anim->frameCount - 1 : active_anim->loopStart;
-      // do_next_frame = false;
+      readyQueue.pop(active_frame);
     }
 
-    rgb_matrix::StreamReader reader(&active_anim->sequence.at(active_anim->frame).slices[i]);
+    rgb_matrix::StreamReader reader(&active_frame.slices[i]);
     while(!interrupt_received && reader.GetNext(offscreen_canvas, &d_us))
     {
       offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, 1);
     }
     reader.Rewind();
   } while (!interrupt_received);
+
+  std::cout << "Ending display..." << std::endl;
+
+  // shutdown
+  if(zmq_thread.joinable()) zmq_thread.join();
+  if(producer.joinable()) producer.join();
+  socket.close();
+  for (auto& a : AnimList) {
+      a.second.stream.close();
+  }
+
+  return 0;
 }
