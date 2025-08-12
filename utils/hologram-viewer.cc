@@ -281,10 +281,7 @@ void ReadAnimFile(fs::path filepath, Anim &a)
   a.headHead = a.stream.tellg();
   a.frameCount = h.frameCount;
   a.loopStart = h.loopStart;
-  if( a.loopStart == a.frame )
-  {
-    a.loopHead = a.stream.tellg();
-  }
+  a.loopHead = a.headHead + static_cast<std::streampos>( sizeof(SimpleFrame) * a.loopStart );
 
   // // convert SimpleFrame to MemFrame for each frame
   // for(size_t i = 0; i < h.frameCount; i++)
@@ -325,10 +322,6 @@ MemFrame GetNextFrame(Anim &a)
     a.stream.seekg(a.loopHead);
   }
   a.stream.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
-  if( a.loopStart == a.frame )
-  {
-    a.loopHead = a.stream.tellg();
-  }
 
   // store each slice in stream
   for(size_t k = 0; k < SLICE_COUNT; k++)
@@ -496,7 +489,7 @@ int main(int argc, char *argv[])
 
   tmillis_t last_time = GetTimeInMillis();
 
-  std::ifstream *f;
+  MemFrame frame;
 
   std::cout << "Display begin" << std::endl;
   do {
@@ -536,14 +529,15 @@ int main(int argc, char *argv[])
     // if(do_next_frame)
     {
       last_time = GetTimeInMillis();
-      GetNextFrame(f, active_anim);
+      frame = GetNextFrame(*active_anim);
       // active_anim->frame++;
       // if(active_anim->frame >= active_anim->frameCount)
       //   active_anim->frame = active_anim->loopStart >= active_anim->frameCount ? active_anim->frameCount - 1 : active_anim->loopStart;
       // do_next_frame = false;
     }
 
-    rgb_matrix::StreamReader reader(&active_anim->sequence.at(active_anim->frame).slices[i]);
+    // rgb_matrix::StreamReader reader(&active_anim->sequence.at(active_anim->frame).slices[i]);
+    rgb_matrix::StreamReader reader(frame.slices[i]);
     while(!interrupt_received && reader.GetNext(offscreen_canvas, &d_us))
     {
       offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, 1);
