@@ -28,7 +28,6 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <sys/mman.h>
 #include <unistd.h>
 
 #include <iostream>
@@ -59,7 +58,7 @@ using rgb_matrix::StreamReader;
 #define SLICE_QUADRANT (SLICE_COUNT / 4)
 #define SLICE_WRAP(slice) ((slice) % (SLICE_COUNT))
 
-#define FRAME_TIME 3000 // duration of each frame in milliseconds
+#define FRAME_TIME 100 // duration of each frame in milliseconds
 
 /* GLOBALS */
 
@@ -138,13 +137,7 @@ struct AnimHeader
 
 struct Anim
 {
-  // std::vector<MemFrame> sequence;
-  // std::ifstream stream;
-  int fd;
-  char* data;
-  size_t offset = 0;
-  size_t headHead;
-  size_t loopHead;
+  std::vector<MemFrame> sequence;
   uint32_t frame = 0; // current frame
   uint32_t frameCount = 0;
   uint32_t loopStart = 0; // end anim -> loop/idle frame
@@ -278,88 +271,37 @@ static uint32_t rotation_current_angle(void) {
 
 void ReadAnimFile(fs::path filepath, Anim &a)
 {
-  // a.stream.open(filepath, std::ios::in | std::ios::binary );
+  std::ifstream f(filepath, std::ios::in | std::ios::binary );
 
   AnimHeader h;
-  struct stat st;
-  // a.stream.read(reinterpret_cast<char*>(&h), sizeof(AnimHeader));
-  
-  // make pointer to file data
-  a.fd = open(filepath.c_str(), O_RDONLY);
-  fstat(a.fd,&st);
-  a.data = reinterpret_cast<char*> ( mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, a.fd, 0) );
-  
-  memcpy(&h, a.data, sizeof(AnimHeader));
-  a.headHead = sizeof(AnimHeader);
-  a.offset = sizeof(AnimHeader);
+  f.read(reinterpret_cast<char*>(&h), sizeof(AnimHeader));
   a.frameCount = h.frameCount;
   a.loopStart = h.loopStart;
-  a.loopHead = a.headHead + ( sizeof(SimpleFrame) * a.loopStart );
 
-  // // convert SimpleFrame to MemFrame for each frame
-  // for(size_t i = 0; i < h.frameCount; i++)
-  // {
-  //   SimpleFrame frame;
-  //   MemFrame memf;
-  //   f.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
-
-  //   // store each slice in stream
-  //   for(size_t k = 0; k < SLICE_COUNT; k++)
-  //   {
-  //     rgb_matrix::StreamWriter out(&memf.slices[k]);
-
-  //     for (size_t y = 0; y < SLICE_ROWS; ++y) {
-  //       for (size_t x = 0; x < SLICE_COLS; ++x) {
-  //         const Pixel p = frame.slices[k].GetPixel(x, y);
-  //         reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
-  //       }
-  //     }
-
-  //     out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
-  //   }
-
-  //   a.sequence.push_back(memf);
-  // }
-}
-
-void* frame_worker (void* s)
-{
-
-}
-
-MemFrame GetNextFrame(Anim &a)
-{
   // convert SimpleFrame to MemFrame for each frame
-  SimpleFrame frame;
-  MemFrame memf;
-  a.frame++;
-  a.offset += sizeof(SimpleFrame);
-  if(a.frame >= a.frameCount)
+  for(size_t i = 0; i < h.frameCount; i++)
   {
-    a.frame = a.loopStart >= a.frameCount ? a.frameCount - 1 : a.loopStart;
-    // a.stream.clear();  // clear EOF flag
-    // a.stream.seekg(a.loopHead);
-    a.offset = a.frame * sizeof(SimpleFrame) + a.headHead;
-  }
-  // a.stream.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
-  memcpy(reinterpret_cast<char*>(&frame), a.data + a.offset, sizeof(SimpleFrame));
+    SimpleFrame frame;
+    MemFrame memf;
+    f.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
 
-  // store each slice in stream
-  for(size_t k = 0; k < SLICE_COUNT; k++)
-  {
-    rgb_matrix::StreamWriter out(&memf.slices[k]);
+    // store each slice in stream
+    for(size_t k = 0; k < SLICE_COUNT; k++)
+    {
+      rgb_matrix::StreamWriter out(&memf.slices[k]);
 
-    for (size_t y = 0; y < SLICE_ROWS; ++y) {
-      for (size_t x = 0; x < SLICE_COLS; ++x) {
-        const Pixel p = frame.slices[k].GetPixel(x, y);
-        reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
+      for (size_t y = 0; y < SLICE_ROWS; ++y) {
+        for (size_t x = 0; x < SLICE_COLS; ++x) {
+          const Pixel p = frame.slices[k].GetPixel(x, y);
+          reader_canvas->SetPixel(x, y, p.r, p.g, p.b);
+        }
       }
+
+      out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
     }
 
-    out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
+    a.sequence.push_back(memf);
   }
-
-  return memf;
 }
 
 int RetrieveAnimList(std::map< std::string, Anim > &new_list)
@@ -510,8 +452,6 @@ int main(int argc, char *argv[])
 
   tmillis_t last_time = GetTimeInMillis();
 
-  MemFrame frame;
-
   std::cout << "Display begin" << std::endl;
   do {
     uint16_t slice_angle = SLICE_WRAP(((rotation_current_angle() >> (ROTATION_PRECISION - 10)) * SLICE_COUNT) >> 10);
@@ -550,15 +490,13 @@ int main(int argc, char *argv[])
     // if(do_next_frame)
     {
       last_time = GetTimeInMillis();
-      frame = GetNextFrame(*active_anim);
-      // active_anim->frame++;
-      // if(active_anim->frame >= active_anim->frameCount)
-      //   active_anim->frame = active_anim->loopStart >= active_anim->frameCount ? active_anim->frameCount - 1 : active_anim->loopStart;
+      active_anim->frame++;
+      if(active_anim->frame >= active_anim->frameCount)
+        active_anim->frame = active_anim->loopStart >= active_anim->frameCount ? active_anim->frameCount - 1 : active_anim->loopStart;
       // do_next_frame = false;
     }
 
-    // rgb_matrix::StreamReader reader(&active_anim->sequence.at(active_anim->frame).slices[i]);
-    rgb_matrix::StreamReader reader(&frame.slices[i]);
+    rgb_matrix::StreamReader reader(&active_anim->sequence.at(active_anim->frame).slices[i]);
     while(!interrupt_received && reader.GetNext(offscreen_canvas, &d_us))
     {
       offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, 1);
