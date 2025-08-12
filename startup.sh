@@ -1,5 +1,6 @@
 #!/bin/bash
 
+cd "$(dirname "$0")" || exit 1
 echo -e "    Welcome!\n \n    Display \n   starting... \n \n       IP " > ./welcome.txt
 echo " $(ifconfig wlan0 | awk '/inet / {gsub("", $2); print $2}')" >> ./welcome.txt
 cat "./welcome.txt" | ./examples-api-use/text-example --led-rows=64 --led-cols=64 --led-limit-refresh=1500 --led-pixel-mapper="Rotate:270" -C 255,255,255 -f /home/dietpi/u8g2/tools/font/bdf/4x6.bdf -y 9 &

@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <iostream>
@@ -58,7 +59,7 @@ using rgb_matrix::StreamReader;
 #define SLICE_QUADRANT (SLICE_COUNT / 4)
 #define SLICE_WRAP(slice) ((slice) % (SLICE_COUNT))
 
-#define FRAME_TIME 100 // duration of each frame in milliseconds
+#define FRAME_TIME 3000 // duration of each frame in milliseconds
 
 /* GLOBALS */
 
@@ -138,9 +139,12 @@ struct AnimHeader
 struct Anim
 {
   // std::vector<MemFrame> sequence;
-  std::ifstream stream;
-  std::streampos headHead;
-  std::streampos loopHead;
+  // std::ifstream stream;
+  int fd;
+  char* data;
+  size_t offset = 0;
+  size_t headHead;
+  size_t loopHead;
   uint32_t frame = 0; // current frame
   uint32_t frameCount = 0;
   uint32_t loopStart = 0; // end anim -> loop/idle frame
@@ -274,14 +278,23 @@ static uint32_t rotation_current_angle(void) {
 
 void ReadAnimFile(fs::path filepath, Anim &a)
 {
-  a.stream.open(filepath, std::ios::in | std::ios::binary );
+  // a.stream.open(filepath, std::ios::in | std::ios::binary );
 
   AnimHeader h;
-  a.stream.read(reinterpret_cast<char*>(&h), sizeof(AnimHeader));
-  a.headHead = a.stream.tellg();
+  struct stat st;
+  // a.stream.read(reinterpret_cast<char*>(&h), sizeof(AnimHeader));
+  
+  // make pointer to file data
+  a.fd = open(filepath.c_str(), O_RDONLY);
+  fstat(a.fd,&st);
+  a.data = reinterpret_cast<char*> ( mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, a.fd, 0) );
+  
+  memcpy(&h, a.data, sizeof(AnimHeader));
+  a.headHead = sizeof(AnimHeader);
+  a.offset = sizeof(AnimHeader);
   a.frameCount = h.frameCount;
   a.loopStart = h.loopStart;
-  a.loopHead = a.headHead + static_cast<std::streampos>( sizeof(SimpleFrame) * a.loopStart );
+  a.loopHead = a.headHead + ( sizeof(SimpleFrame) * a.loopStart );
 
   // // convert SimpleFrame to MemFrame for each frame
   // for(size_t i = 0; i < h.frameCount; i++)
@@ -309,19 +322,27 @@ void ReadAnimFile(fs::path filepath, Anim &a)
   // }
 }
 
+void* frame_worker (void* s)
+{
+
+}
+
 MemFrame GetNextFrame(Anim &a)
 {
   // convert SimpleFrame to MemFrame for each frame
   SimpleFrame frame;
   MemFrame memf;
   a.frame++;
+  a.offset += sizeof(SimpleFrame);
   if(a.frame >= a.frameCount)
   {
     a.frame = a.loopStart >= a.frameCount ? a.frameCount - 1 : a.loopStart;
-    a.stream.clear();  // clear EOF flag
-    a.stream.seekg(a.loopHead);
+    // a.stream.clear();  // clear EOF flag
+    // a.stream.seekg(a.loopHead);
+    a.offset = a.frame * sizeof(SimpleFrame) + a.headHead;
   }
-  a.stream.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
+  // a.stream.read(reinterpret_cast<char*>(&frame), sizeof(SimpleFrame));
+  memcpy(reinterpret_cast<char*>(&frame), a.data + a.offset, sizeof(SimpleFrame));
 
   // store each slice in stream
   for(size_t k = 0; k < SLICE_COUNT; k++)
