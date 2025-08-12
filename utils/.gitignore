@@ -8,3 +8,5 @@ uart-test
 images/*
 anims/*
 !anims/idle.anim
+ip.txt
+welcome.txt
