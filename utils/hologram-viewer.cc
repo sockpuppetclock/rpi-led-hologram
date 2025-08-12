@@ -547,7 +547,7 @@ int main(int argc, char *argv[])
         out.Stream(*reader_canvas, 0); // out writes to StreamIO memf[k]
       }
 
-      readyQueue.push(next_frame);
+      readyQueue.push(next_frame); // get next frame or leave unchanged if nothing new
       std::this_thread::yield();
     }
   });
