@@ -211,7 +211,7 @@ int main(int argc, char *argv[]) {
   std::ofstream f(outpath, std::ios::out | std::ios::binary | std::ios::app);
   f.write(reinterpret_cast<const char*>(&header), sizeof(AnimHeader));
   
-  SimpleFrame *s;
+  SimpleFrame *s = new SimpleFrame();
 
   for(auto it = list.begin(); it != list.end() && count != (frames * SLICE_COUNT); ++it)
   {

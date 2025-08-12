@@ -537,7 +537,7 @@ int main(int argc, char *argv[])
     }
 
     // rgb_matrix::StreamReader reader(&active_anim->sequence.at(active_anim->frame).slices[i]);
-    rgb_matrix::StreamReader reader(frame.slices[i]);
+    rgb_matrix::StreamReader reader(&frame.slices[i]);
     while(!interrupt_received && reader.GetNext(offscreen_canvas, &d_us))
     {
       offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, 1);
